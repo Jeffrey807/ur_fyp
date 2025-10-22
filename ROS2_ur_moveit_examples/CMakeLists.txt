@@ -128,4 +128,9 @@ target_include_directories(hello_pilz2 PUBLIC include)
 ament_target_dependencies(hello_pilz2 moveit_common moveit_core moveit_ros_planning moveit_ros_planning_interface rviz_visual_tools moveit_visual_tools rclcpp std_msgs)
 install(TARGETS hello_pilz2 DESTINATION lib/${PROJECT_NAME})
 
+add_executable(hello_pilz2_with_suction src/hello_pilz2_with_suction.cpp)
+target_include_directories(hello_pilz2_with_suction PUBLIC include)
+ament_target_dependencies(hello_pilz2_with_suction moveit_common moveit_core moveit_ros_planning moveit_ros_planning_interface rviz_visual_tools moveit_visual_tools rclcpp std_msgs ur_msgs)
+install(TARGETS hello_pilz2_with_suction DESTINATION lib/${PROJECT_NAME})
+
 ament_package()
