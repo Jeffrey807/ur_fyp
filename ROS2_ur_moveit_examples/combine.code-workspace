@@ -1,0 +1,20 @@
+{
+	"folders": [
+		{
+			"path": "../../../calib_ws"
+		},
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../pcd_out"
+		},
+		{
+			"path": "../../../ur_ros2_driver_ws"
+		},
+		{
+			"path": "../../../moveit_tut_ws"
+		}
+	],
+	"settings": {}
+}

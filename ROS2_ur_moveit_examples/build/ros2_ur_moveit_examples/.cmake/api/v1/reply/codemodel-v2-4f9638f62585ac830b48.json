@@ -1,0 +1,151 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-64d44805fb69acff33cb.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "ros2_ur_moveit_examples",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "check_collisions::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-check_collisions-9fd73f9fcfca57d63fdc.json",
+					"name" : "check_collisions",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "hello_moveit::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-hello_moveit-8c34a677e32f27a2930f.json",
+					"name" : "hello_moveit",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "kinematics::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-kinematics-aa47aade849d74cb6d68.json",
+					"name" : "kinematics",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "pick_from_detection::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-pick_from_detection-a6e318d6d59c768787d8.json",
+					"name" : "pick_from_detection",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "planning_scene::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-planning_scene-e66c6d82e34e815bdf3f.json",
+					"name" : "planning_scene",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "planning_scene_service::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-planning_scene_service-8a5c6e67c9ffb26605aa.json",
+					"name" : "planning_scene_service",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ros2_ur_moveit_examples_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ros2_ur_moveit_examples_uninstall-013d544914f929e43863.json",
+					"name" : "ros2_ur_moveit_examples_uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-a81183811a4da52a7792.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ur_2d_pick::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ur_2d_pick-8172f41dea145573aeca.json",
+					"name" : "ur_2d_pick",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ur_moveit_cpp_tcp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ur_moveit_cpp_tcp-9287d0b0e9fda9b27d39.json",
+					"name" : "ur_moveit_cpp_tcp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ur_suction::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ur_suction-816e9b03a5f9cd89f51c.json",
+					"name" : "ur_suction",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/orin_nano/ur_fyp_ws/src/ROS2_ur_moveit_examples/build/ros2_ur_moveit_examples",
+		"source" : "/home/orin_nano/ur_fyp_ws/src/ROS2_ur_moveit_examples"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}
