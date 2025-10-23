@@ -31,8 +31,8 @@ int main(int argc, char *argv[])
     // Configure MoveGroup for Pilz planner
     move_group_interface.setPoseReferenceFrame("base_link");
     move_group_interface.setEndEffectorLink("tool0");
-    move_group_interface.setMaxVelocityScalingFactor(0.1);
-    move_group_interface.setMaxAccelerationScalingFactor(0.1);
+    move_group_interface.setMaxVelocityScalingFactor(0.5);
+    move_group_interface.setMaxAccelerationScalingFactor(0.5);
     move_group_interface.setWorkspace(-2.0, -2.0, 0.0, 2.0, 2.0, 2.0); // Prevent planning below base
 
     // Set the planning pipeline to use Pilz Industrial Motion Planner
@@ -73,19 +73,25 @@ int main(int argc, char *argv[])
 
     RCLCPP_INFO(logger, "Starting custom motion sequence with suction gripper control");
 
-    // ===== INITIALIZATION: Go to Waypoint 1 from current position =====
+    // ===== CONTINUOUS LOOP =====
+    int cycle_count = 0;
+    while (rclcpp::ok()) {
+        cycle_count++;
+        RCLCPP_INFO(logger, "=== STARTING CYCLE %d ===", cycle_count);
+
+        // ===== INITIALIZATION: Go to Waypoint 1 from current position =====
     RCLCPP_INFO(logger, "Initialization: Moving to Waypoint 1 from current position...");
 
     // ===== VARIABLES FOR COORDINATES AND ORIENTATION =====
     // Waypoint 1 coordinates (modify these as needed)
-    double waypoint1_x = 0.41077980111952567;
-    double waypoint1_y = -0.2674434723652385;
-    double waypoint1_z = 0.33779377789121495;
+    double waypoint1_x = 0.2459503198788797; //0.41077980111952567;
+    double waypoint1_y = 0.10942917898100181; //-0.2674434723652385;
+    double waypoint1_z = 0.31294021384470305; //0.33779377789121495;
     
     // Waypoint 2 coordinates (modify these as needed)
-    double waypoint2_x = 0.39635931646749123; //0.4197158221097292;
-    double waypoint2_y = 0.27489991813542974; //-0.008449074293799572;
-    double waypoint2_z = 0.25199154817411995; //0.28201676550458815;
+    double waypoint2_x = 0.2459427441052218; //0.39635931646749123;
+    double waypoint2_y = 0.35742714229516825; //0.27489991813542974;
+    double waypoint2_z = 0.26268176938187054; //0.25199154817411995;
     
     // Orientation (same for all waypoints - modify as needed)
     double orientation_x = -0.7192677440288445;
@@ -94,7 +100,7 @@ int main(int argc, char *argv[])
     double orientation_w = -0.00012794497354252145;
     
     // Z offset for up/down movements (10mm = 0.01m)
-    double z_offset = 0.01;
+    double z_offset = 0.04;
 
     // ===== INITIALIZATION: Go to Waypoint 1 from current position =====
     RCLCPP_INFO(logger, "Initialization: Moving to Waypoint 1 from current position...");
@@ -313,10 +319,17 @@ int main(int argc, char *argv[])
     // 8. TURN OFF BLOW
     RCLCPP_INFO(logger, "Step 8: Turning OFF Channel 1 (blow)...");
     set_blow(false);     // Channel 1 LOW (blow off)
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    RCLCPP_INFO(logger, "Channel 1 (blow) turned OFF - sequence completed!");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        RCLCPP_INFO(logger, "Channel 1 (blow) turned OFF - sequence completed!");
 
-    RCLCPP_INFO(logger, "Custom motion sequence with suction gripper control completed successfully!");
+        RCLCPP_INFO(logger, "=== CYCLE %d COMPLETED SUCCESSFULLY! ===", cycle_count);
+        
+        // Wait 2 seconds before starting next cycle
+        RCLCPP_INFO(logger, "Waiting 2 seconds before starting next cycle... (Press Ctrl+C to exit)");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+
+    RCLCPP_INFO(logger, "Continuous motion sequence terminated. Total cycles completed: %d", cycle_count);
 
     // Shutdown ROS
     rclcpp::shutdown();
