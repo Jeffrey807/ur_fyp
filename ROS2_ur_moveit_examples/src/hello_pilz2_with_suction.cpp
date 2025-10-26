@@ -15,6 +15,7 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/header.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 int main(int argc, char *argv[])
 {
@@ -76,11 +77,78 @@ int main(int argc, char *argv[])
 
     RCLCPP_INFO(logger, "Starting custom motion sequence with suction gripper control");
 
+    // ===== RED DETECTION WAIT FUNCTION =====
+    auto wait_for_red_detected = [&node, &logger]() -> bool {
+        RCLCPP_INFO(logger, "Waiting for red DETECTED for 1 second...");
+        
+        // Subscribe to red detection topic
+        std_msgs::msg::Bool::SharedPtr latest_red_msg = nullptr;
+        auto red_subscription = node->create_subscription<std_msgs::msg::Bool>(
+            "/red_detected", 10,
+            [&latest_red_msg](const std_msgs::msg::Bool::SharedPtr msg) {
+                latest_red_msg = msg;
+            });
+        
+        auto start_time = std::chrono::steady_clock::now();
+        auto red_detected_start = std::chrono::steady_clock::now();
+        bool red_detected_timer_started = false;
+        
+        while (rclcpp::ok()) {
+            rclcpp::spin_some(node);
+            
+            if (latest_red_msg) {
+                bool red_detected = latest_red_msg->data;
+                
+                if (red_detected) {
+                    // Red detected - start/continue timer
+                    if (!red_detected_timer_started) {
+                        red_detected_start = std::chrono::steady_clock::now();
+                        red_detected_timer_started = true;
+                        RCLCPP_INFO(logger, "Red DETECTED - starting 1 second timer...");
+                    } else {
+                        // Check if 1 second has passed
+                        auto current_time = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - red_detected_start);
+                        
+                        if (elapsed.count() >= 1000) {  // 1 second
+                            RCLCPP_INFO(logger, "Red DETECTED for 1 second - proceeding with motion!");
+                            return true;
+                        }
+                    }
+                } else {
+                    // Red not detected - reset timer
+                    if (red_detected_timer_started) {
+                        RCLCPP_INFO(logger, "Red NOT detected - resetting timer...");
+                        red_detected_timer_started = false;
+                    }
+                }
+            }
+            
+            // Check for overall timeout (30 seconds)
+            auto current_time = std::chrono::steady_clock::now();
+            auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
+            if (total_elapsed.count() > 30) {
+                RCLCPP_ERROR(logger, "Timeout waiting for red DETECTED!");
+                return false;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        
+        return false;
+    };
+
     // ===== CONTINUOUS LOOP =====
     int cycle_count = 0;
     while (rclcpp::ok()) {
         cycle_count++;
         RCLCPP_INFO(logger, "=== STARTING CYCLE %d ===", cycle_count);
+
+        // ===== WAIT FOR RED DETECTED =====
+        if (!wait_for_red_detected()) {
+            RCLCPP_ERROR(logger, "Failed to get red DETECTED status - skipping cycle");
+            continue;
+        }
 
         // ===== GET WAYPOINT 2 FROM TOPIC =====
         RCLCPP_INFO(logger, "Getting Waypoint 2 coordinates from /pin_housing/target_pose topic...");

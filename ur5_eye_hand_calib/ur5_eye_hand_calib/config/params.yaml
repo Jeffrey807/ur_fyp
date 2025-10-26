@@ -1,0 +1,6 @@
+image_topic: /camera/color/image_raw
+pose_topic: /tcp_pose_broadcaster/pose
+grid_size: 0.026          # 26 mm checkerboard squares
+board_dims: [9, 6]        # inner corners
+output_transform: camera_in_base.yaml
+
