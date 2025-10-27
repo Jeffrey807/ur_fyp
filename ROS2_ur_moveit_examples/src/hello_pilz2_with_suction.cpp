@@ -268,6 +268,16 @@ int main(int argc, char *argv[])
     double waypoint4_y = 0.4325847235030795;
     double waypoint4_z = 0.29099281780614344;
     
+    // Waypoint 5 coordinates (first intermediate position)
+    double waypoint5_x = 0.2522885702097998;
+    double waypoint5_y = 0.4396583465695335;
+    double waypoint5_z = 0.2627460983462466;
+    
+    // Waypoint 6 coordinates (final release position)
+    double waypoint6_x = 0.27415139420948165;
+    double waypoint6_y = 0.42230192199148725;
+    double waypoint6_z = 0.26283116855426103;
+    
     // Orientation (same for all waypoints - modify as needed)
     double orientation_x = -0.7192677440288445;
     double orientation_y = 0.6946431472456444;
@@ -552,44 +562,176 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // 8. Return to Waypoint 1 WITH OBJECT
-    RCLCPP_INFO(logger, "Step 8: Moving to Waypoint 1 with object...");
-    move_group_interface.setPoseTarget(waypoint1_pose, "tool0");
+    // 8. Move to Waypoint 5 (first intermediate position) WITH CORRECTED ORIENTATION
+    RCLCPP_INFO(logger, "Step 8: Moving to Waypoint 5 (first intermediate position) with corrected orientation...");
+    auto const waypoint5_pose = [waypoint5_x, waypoint5_y, waypoint5_z, corrected_x, corrected_y, corrected_z, corrected_w]()
+    {
+        geometry_msgs::msg::Pose msg;
+        msg.position.x = waypoint5_x;
+        msg.position.y = waypoint5_y;
+        msg.position.z = waypoint5_z;
+        msg.orientation.x = corrected_x;
+        msg.orientation.y = corrected_y;
+        msg.orientation.z = corrected_z;
+        msg.orientation.w = corrected_w;
+        return msg;
+    }();
     
-    auto const [success8, plan8] = [&move_group_interface]
+    move_group_interface.setPoseTarget(waypoint5_pose, "tool0");
+    
+    auto const [success5_new, plan5_new] = [&move_group_interface]
     {
         moveit::planning_interface::MoveGroupInterface::Plan msg;
         auto const ok = static_cast<bool>(move_group_interface.plan(msg));
         return std::make_pair(ok, msg);
     }();
 
-    if (success8)
+    if (success5_new)
+    {
+        RCLCPP_INFO(logger, "Waypoint 5 planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan5_new);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Waypoint 5 reached!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Waypoint 5 execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(logger, "Waypoint 5 planning failed!");
+        return -1;
+    }
+
+    // 9. Move to Waypoint 6 (final release position) WITH CORRECTED ORIENTATION
+    RCLCPP_INFO(logger, "Step 9: Moving to Waypoint 6 (final release position) with corrected orientation...");
+    auto const waypoint6_pose = [waypoint6_x, waypoint6_y, waypoint6_z, corrected_x, corrected_y, corrected_z, corrected_w]()
+    {
+        geometry_msgs::msg::Pose msg;
+        msg.position.x = waypoint6_x;
+        msg.position.y = waypoint6_y;
+        msg.position.z = waypoint6_z;
+        msg.orientation.x = corrected_x;
+        msg.orientation.y = corrected_y;
+        msg.orientation.z = corrected_z;
+        msg.orientation.w = corrected_w;
+        return msg;
+    }();
+    
+    move_group_interface.setPoseTarget(waypoint6_pose, "tool0");
+    
+    auto const [success6, plan6] = [&move_group_interface]
+    {
+        moveit::planning_interface::MoveGroupInterface::Plan msg;
+        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+        return std::make_pair(ok, msg);
+    }();
+
+    if (success6)
+    {
+        RCLCPP_INFO(logger, "Waypoint 6 planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan6);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Waypoint 6 reached!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Waypoint 6 execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(logger, "Waypoint 6 planning failed!");
+        return -1;
+    }
+
+    // 10. TURN OFF SUCTION (no blow, wait 1 second)
+    RCLCPP_INFO(logger, "Step 10: Turning OFF Channel 0 (suction) and waiting 1 second...");
+    set_suction(false);  // Channel 0 LOW (suction off)
+    
+    // Wait 1 second for object to be released
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    RCLCPP_INFO(logger, "Object released! Waiting 1 second...");
+
+    // 11. Move up 30mm vertically (returning to original orientation)
+    RCLCPP_INFO(logger, "Step 11: Moving up 30mm vertically with original orientation...");
+    auto const up_30mm_pose = [waypoint6_x, waypoint6_y, waypoint6_z, z_offset, orientation_x, orientation_y, orientation_z, orientation_w]()
+    {
+        geometry_msgs::msg::Pose msg;
+        msg.position.x = waypoint6_x;
+        msg.position.y = waypoint6_y;
+        msg.position.z = waypoint6_z + z_offset;  // +30mm Z
+        msg.orientation.x = orientation_x;  // Original orientation
+        msg.orientation.y = orientation_y;
+        msg.orientation.z = orientation_z;
+        msg.orientation.w = orientation_w;
+        return msg;
+    }();
+    
+    move_group_interface.setPoseTarget(up_30mm_pose, "tool0");
+    
+    auto const [success_up, plan_up] = [&move_group_interface]
+    {
+        moveit::planning_interface::MoveGroupInterface::Plan msg;
+        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+        return std::make_pair(ok, msg);
+    }();
+
+    if (success_up)
+    {
+        RCLCPP_INFO(logger, "Up 30mm planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan_up);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Up 30mm completed!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Up 30mm execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(logger, "Up 30mm planning failed!");
+        return -1;
+    }
+
+    // 12. Return to Waypoint 1 WITH ORIGINAL ORIENTATION
+    RCLCPP_INFO(logger, "Step 12: Moving to Waypoint 1 with original orientation...");
+    move_group_interface.setPoseTarget(waypoint1_pose, "tool0");
+    
+    auto const [success12, plan12] = [&move_group_interface]
+    {
+        moveit::planning_interface::MoveGroupInterface::Plan msg;
+        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+        return std::make_pair(ok, msg);
+    }();
+
+    if (success12)
     {
         RCLCPP_INFO(logger, "Move to Waypoint 1 planning successful! Executing...");
-        move_group_interface.execute(plan8);
-        RCLCPP_INFO(logger, "Moved to Waypoint 1 with object!");
+        auto execute_result = move_group_interface.execute(plan12);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Moved to Waypoint 1!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Move to Waypoint 1 execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
     }
     else
     {
         RCLCPP_ERROR(logger, "Move to Waypoint 1 planning failed!");
         return -1;
     }
-
-    // 9. TURN OFF SUCTION + TURN ON BLOW (release object with blow)
-    RCLCPP_INFO(logger, "Step 9: Turning OFF Channel 0 (suction) and ON Channel 1 (blow) to release object...");
-    set_suction(false);  // Channel 0 LOW (suction off)
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    set_blow(true);      // Channel 1 ON (blow on)
-    
-    // Wait 1 second for object to be released
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    RCLCPP_INFO(logger, "Object released with blow!");
-
-    // 10. TURN OFF BLOW
-    RCLCPP_INFO(logger, "Step 10: Turning OFF Channel 1 (blow)...");
-    set_blow(false);     // Channel 1 LOW (blow off)
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        RCLCPP_INFO(logger, "Channel 1 (blow) turned OFF - sequence completed!");
 
         RCLCPP_INFO(logger, "=== CYCLE %d COMPLETED SUCCESSFULLY! ===", cycle_count);
         
