@@ -12,10 +12,12 @@
 #include <ur_msgs/srv/set_io.hpp>
 #include <chrono>
 #include <thread>
+#include <cmath>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 
 int main(int argc, char *argv[])
 {
@@ -76,6 +78,29 @@ int main(int argc, char *argv[])
     };
 
     RCLCPP_INFO(logger, "Starting custom motion sequence with suction gripper control");
+
+    // ===== QUATERNION ROTATION FUNCTION =====
+    auto apply_yaw_rotation = [](double yaw_degrees, double orig_x, double orig_y, double orig_z, double orig_w) -> std::tuple<double, double, double, double> {
+        // Convert yaw degrees to radians
+        double yaw_rad = yaw_degrees * M_PI / 180.0;
+        
+        // Create rotation quaternion around Z-axis
+        double cos_half_yaw = cos(yaw_rad / 2.0);
+        double sin_half_yaw = sin(yaw_rad / 2.0);
+        
+        double rot_x = 0.0;
+        double rot_y = 0.0;
+        double rot_z = sin_half_yaw;
+        double rot_w = cos_half_yaw;
+        
+        // Apply rotation to original quaternion
+        double new_x = orig_w * rot_x + orig_x * rot_w + orig_y * rot_z - orig_z * rot_y;
+        double new_y = orig_w * rot_y - orig_x * rot_z + orig_y * rot_w + orig_z * rot_x;
+        double new_z = orig_w * rot_z + orig_x * rot_y - orig_y * rot_x + orig_z * rot_w;
+        double new_w = orig_w * rot_w - orig_x * rot_x - orig_y * rot_y - orig_z * rot_z;
+        
+        return std::make_tuple(new_x, new_y, new_z, new_w);
+    };
 
     // ===== RED DETECTION WAIT FUNCTION =====
     auto wait_for_red_detected = [&node, &logger]() -> bool {
@@ -189,6 +214,41 @@ int main(int argc, char *argv[])
         RCLCPP_INFO(logger, "Waypoint 3 coordinates: x=%.3f, y=%.3f, z=%.3f", 
                    waypoint3_x, waypoint3_y, waypoint3_z);
 
+        // ===== READ YAW ORIENTATION FROM TOPIC =====
+        RCLCPP_INFO(logger, "Reading yaw orientation from /pin_housing/pixel_pose topic...");
+        
+        // Subscribe to pixel pose topic to get yaw orientation
+        std_msgs::msg::Float32MultiArray::SharedPtr pixel_pose_msg = nullptr;
+        auto pixel_subscription = node->create_subscription<std_msgs::msg::Float32MultiArray>(
+            "/pin_housing/pixel_pose", 10,
+            [&pixel_pose_msg](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
+                pixel_pose_msg = msg;
+            });
+        
+        // Wait for pixel pose message (with timeout)
+        auto pixel_start_time = std::chrono::steady_clock::now();
+        while (!pixel_pose_msg && rclcpp::ok()) {
+            rclcpp::spin_some(node);
+            auto pixel_current_time = std::chrono::steady_clock::now();
+            auto pixel_elapsed = std::chrono::duration_cast<std::chrono::seconds>(pixel_current_time - pixel_start_time);
+            if (pixel_elapsed.count() > 3) {  // 3 second timeout
+                RCLCPP_ERROR(logger, "Timeout waiting for /pin_housing/pixel_pose message!");
+                return -1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        
+        if (!pixel_pose_msg || pixel_pose_msg->data.size() < 3) {
+            RCLCPP_ERROR(logger, "Failed to get yaw orientation from pixel pose!");
+            return -1;
+        }
+        
+        // Extract yaw orientation (3rd element: [u, v, yaw_deg])
+        double current_yaw = pixel_pose_msg->data[2];
+        double yaw_correction = 90.0 - current_yaw;  // Calculate correction to make yaw = 90°
+        
+        RCLCPP_INFO(logger, "Current yaw: %.2f°, Yaw correction needed: %.2f°", current_yaw, yaw_correction);
+
         // ===== INITIALIZATION: Go to Waypoint 1 from current position =====
     RCLCPP_INFO(logger, "Initialization: Moving to Waypoint 1 from current position...");
 
@@ -198,10 +258,15 @@ int main(int argc, char *argv[])
     double waypoint1_y = 0.10942917898100181; //-0.2674434723652385;
     double waypoint1_z = 0.31294021384470305; //0.33779377789121495;
     
-    // Waypoint 2 coordinates (fixed intermediate approach position)
+    // Waypoint 2 coordinates (original intermediate approach position)
     double waypoint2_x = 0.24261504113229335;
     double waypoint2_y = 0.4412653576982412;
     double waypoint2_z = 0.31294021384470305;
+    
+    // Waypoint 4 coordinates (orientation fixing position)
+    double waypoint4_x = 0.2540252815331876;
+    double waypoint4_y = 0.4325847235030795;
+    double waypoint4_z = 0.29099281780614344;
     
     // Orientation (same for all waypoints - modify as needed)
     double orientation_x = -0.7192677440288445;
@@ -261,7 +326,7 @@ int main(int argc, char *argv[])
     // 1. Go to Waypoint 1 (already there, but for clarity)
     RCLCPP_INFO(logger, "Step 1: Already at Waypoint 1, proceeding to Step 2...");
 
-    // 2. Go to Waypoint 2 (Intermediate approach position)
+    // 2. Go to Waypoint 2 (Original intermediate approach position)
     RCLCPP_INFO(logger, "Step 2: Moving to Waypoint 2 (intermediate approach position)...");
     auto const waypoint2_pose = [waypoint2_x, waypoint2_y, waypoint2_z, orientation_x, orientation_y, orientation_z, orientation_w]()
     {
@@ -437,26 +502,53 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // 7. Return to Waypoint 2 WITH OBJECT
-    RCLCPP_INFO(logger, "Step 7: Moving to Waypoint 2 with object...");
-    move_group_interface.setPoseTarget(waypoint2_pose, "tool0");
+    // 7. Move to Waypoint 4 (orientation fixing position) WITH YAW CORRECTION
+    RCLCPP_INFO(logger, "Step 7: Moving to Waypoint 4 (orientation fixing position) with yaw correction (%.2f°)...", yaw_correction);
     
-    auto const [success7, plan7] = [&move_group_interface]
+    // Apply yaw rotation to the current orientation
+    auto [corrected_x, corrected_y, corrected_z, corrected_w] = apply_yaw_rotation(
+        yaw_correction, orientation_x, orientation_y, orientation_z, orientation_w);
+    
+    // Create corrected pose at Waypoint 4
+    auto const waypoint4_pose = [waypoint4_x, waypoint4_y, waypoint4_z, corrected_x, corrected_y, corrected_z, corrected_w]()
+    {
+        geometry_msgs::msg::Pose msg;
+        msg.position.x = waypoint4_x;
+        msg.position.y = waypoint4_y;
+        msg.position.z = waypoint4_z;
+        msg.orientation.x = corrected_x;
+        msg.orientation.y = corrected_y;
+        msg.orientation.z = corrected_z;
+        msg.orientation.w = corrected_w;
+        return msg;
+    }();
+    
+    move_group_interface.setPoseTarget(waypoint4_pose, "tool0");
+    
+    auto const [success4, plan4] = [&move_group_interface]
     {
         moveit::planning_interface::MoveGroupInterface::Plan msg;
         auto const ok = static_cast<bool>(move_group_interface.plan(msg));
         return std::make_pair(ok, msg);
     }();
 
-    if (success7)
+    if (success4)
     {
-        RCLCPP_INFO(logger, "Move to Waypoint 2 planning successful! Executing...");
-        move_group_interface.execute(plan7);
-        RCLCPP_INFO(logger, "Moved to Waypoint 2 with object!");
+        RCLCPP_INFO(logger, "Waypoint 4 planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan4);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Waypoint 4 reached! Housing is now oriented at 90°");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Waypoint 4 execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
     }
     else
     {
-        RCLCPP_ERROR(logger, "Move to Waypoint 2 planning failed!");
+        RCLCPP_ERROR(logger, "Waypoint 4 planning failed!");
         return -1;
     }
 
