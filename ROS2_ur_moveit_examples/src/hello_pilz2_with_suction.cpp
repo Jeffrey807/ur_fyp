@@ -18,6 +18,7 @@
 #include <std_msgs/msg/header.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_msgs/msg/string.hpp>
 
 int main(int argc, char *argv[])
 {
@@ -37,8 +38,8 @@ int main(int argc, char *argv[])
     // Configure MoveGroup for Pilz planner
     move_group_interface.setPoseReferenceFrame("base_link");
     move_group_interface.setEndEffectorLink("tool0");
-    move_group_interface.setMaxVelocityScalingFactor(0.25);
-    move_group_interface.setMaxAccelerationScalingFactor(0.25);
+    move_group_interface.setMaxVelocityScalingFactor(1);
+    move_group_interface.setMaxAccelerationScalingFactor(1);
     move_group_interface.setWorkspace(-2.0, -2.0, 0.0, 2.0, 2.0, 2.0); // Prevent planning below base
 
     // Set the planning pipeline to use Pilz Industrial Motion Planner
@@ -78,7 +79,39 @@ int main(int argc, char *argv[])
     };
 
     RCLCPP_INFO(logger, "Starting custom motion sequence with suction gripper control");
+/*HEREHEREHERE1
+    // ===== JOINT MOVEMENT FUNCTION (matching pick_from_detection.cpp) =====
+    auto plan_and_execute_joint = [&move_group_interface, &logger](const std::vector<double>& joint_positions, const std::string& description) -> bool
+    {
+        RCLCPP_INFO(logger, "Planning joint move: %s", description.c_str());
+        RCLCPP_INFO(logger, "Joint positions (radians) -> [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+                    joint_positions[0], joint_positions[1], joint_positions[2], 
+                    joint_positions[3], joint_positions[4], joint_positions[5]);
+        
+        move_group_interface.setJointValueTarget(joint_positions);
+        
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (!static_cast<bool>(move_group_interface.plan(plan)))
+        {
+            RCLCPP_ERROR(logger, "Joint move planning failed");
+            return false;
+        }
+        RCLCPP_INFO(logger, "Joint move plan computed. Executing...");
+        return static_cast<bool>(move_group_interface.execute(plan));
+    };
 
+    // ===== WAYPOINT 0 JOINT POSITIONS =====
+    // Your specified joint values (in radians)
+    // Format: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+    std::vector<double> waypoint0_joints = {
+        -0.0036109129535120132,    // shoulder_pan_joint
+        -2.1629932562457483,       // shoulder_lift_joint  
+        2.0472545623779297,        // elbow_joint
+        -1.4392817656146448,       // wrist_1_joint
+        -1.5554221312152308,       // wrist_2_joint
+        -0.037923638020650685      // wrist_3_joint
+    };
+*/
     // ===== QUATERNION ROTATION FUNCTION =====
     auto apply_yaw_rotation = [](double yaw_degrees, double orig_x, double orig_y, double orig_z, double orig_w) -> std::tuple<double, double, double, double> {
         // Convert yaw degrees to radians
@@ -174,7 +207,15 @@ int main(int argc, char *argv[])
             RCLCPP_ERROR(logger, "Failed to get red DETECTED status - skipping cycle");
             continue;
         }
-
+/* HEREHEREHERE2
+        // ===== WAYPOINT 0: Move to joint positions first =====
+        RCLCPP_INFO(logger, "=== WAYPOINT 0: Moving to specified joint positions ===");
+        if (!plan_and_execute_joint(waypoint0_joints, "Waypoint 0 joint positions")) {
+            RCLCPP_ERROR(logger, "Waypoint 0 joint move failed - skipping cycle");
+            continue;
+        }
+        RCLCPP_INFO(logger, "Waypoint 0 reached successfully!");
+*/
         // ===== GET WAYPOINT 2 FROM TOPIC =====
         RCLCPP_INFO(logger, "Getting Waypoint 2 coordinates from /pin_housing/target_pose topic...");
         
@@ -277,6 +318,23 @@ int main(int argc, char *argv[])
     double waypoint6_x = 0.27415139420948165;
     double waypoint6_y = 0.42230192199148725;
     double waypoint6_z = 0.26283116855426103;
+    
+    // Additional waypoints (7-10) to visit after suction OFF and first 30mm up
+    double waypoint7_x = 0.2621176624669639;
+    double waypoint7_y = 0.4557977169287189;
+    double waypoint7_z = 0.25800820385423406;
+    
+    double waypoint8_x = 0.26214343803528317;
+    double waypoint8_y = 0.438323873193058;
+    double waypoint8_z = 0.2580415716957996;
+    
+    double waypoint9_x = 0.22916806412457758;
+    double waypoint9_y = 0.42393476759245424;
+    double waypoint9_z = 0.2580644333402114;
+    
+    double waypoint10_x = 0.2390634480629392;
+    double waypoint10_y = 0.4239284140560104;
+    double waypoint10_z = 0.25803515829781354;
     
     // Orientation (same for all waypoints - modify as needed)
     double orientation_x = -0.7192677440288445;
@@ -689,6 +747,227 @@ int main(int argc, char *argv[])
         if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
         {
             RCLCPP_INFO(logger, "Up 30mm completed!");
+
+            // ===== ADDITIONAL MOTIONS BETWEEN SUCTION OFF AND RETURN TO WP1 =====
+            // Sequence:
+            // coord1 + z_offset -> coord1 -> coord2 -> coord1 -> up 30mm ->
+            // coord3 + z_offset -> coord3 -> coord4 -> coord3 -> up 30mm
+
+            // waypoint7 + z_offset
+            RCLCPP_INFO(logger, "Extra: Moving to coord1 + %.0fmm Z...", z_offset * 1000.0);
+            auto const c1_high_pose = [waypoint7_x, waypoint7_y, waypoint7_z, z_offset, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint7_x;
+                msg.position.y = waypoint7_y;
+                msg.position.z = waypoint7_z + z_offset;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c1_high_pose, "tool0");
+            auto const [ok_c1h, plan_c1h] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c1h || move_group_interface.execute(plan_c1h) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord1 + Z move failed"); return -1; }
+
+            // waypoint7
+            RCLCPP_INFO(logger, "Extra: Moving to coord1...");
+            auto const c1_pose = [waypoint7_x, waypoint7_y, waypoint7_z, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint7_x;
+                msg.position.y = waypoint7_y;
+                msg.position.z = waypoint7_z;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c1_pose, "tool0");
+            auto const [ok_c1, plan_c1] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c1 || move_group_interface.execute(plan_c1) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord1 move failed"); return -1; }
+
+            // waypoint8
+            RCLCPP_INFO(logger, "Extra: Moving to coord2...");
+            auto const c2_pose = [waypoint8_x, waypoint8_y, waypoint8_z, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint8_x;
+                msg.position.y = waypoint8_y;
+                msg.position.z = waypoint8_z;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c2_pose, "tool0");
+            auto const [ok_c2, plan_c2] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c2 || move_group_interface.execute(plan_c2) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord2 move failed"); return -1; }
+
+            // back to waypoint7
+            RCLCPP_INFO(logger, "Extra: Returning to coord1...");
+            move_group_interface.setPoseTarget(c1_pose, "tool0");
+            auto const [ok_c1b, plan_c1b] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c1b || move_group_interface.execute(plan_c1b) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord1 (back) move failed"); return -1; }
+
+            // up 30mm at waypoint7
+            RCLCPP_INFO(logger, "Extra: Moving up %.0fmm from coord1...", z_offset * 1000.0);
+            auto const c1_up_pose = [waypoint7_x, waypoint7_y, waypoint7_z, z_offset, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint7_x;
+                msg.position.y = waypoint7_y;
+                msg.position.z = waypoint7_z + z_offset;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c1_up_pose, "tool0");
+            auto const [ok_c1u, plan_c1u] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c1u || move_group_interface.execute(plan_c1u) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord1 up move failed"); return -1; }
+
+            // waypoint9 + z_offset
+            RCLCPP_INFO(logger, "Extra: Moving to coord3 + %.0fmm Z...", z_offset * 1000.0);
+            auto const c3_high_pose = [waypoint9_x, waypoint9_y, waypoint9_z, z_offset, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint9_x;
+                msg.position.y = waypoint9_y;
+                msg.position.z = waypoint9_z + z_offset;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c3_high_pose, "tool0");
+            auto const [ok_c3h, plan_c3h] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c3h || move_group_interface.execute(plan_c3h) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord3 + Z move failed"); return -1; }
+
+            // waypoint9
+            RCLCPP_INFO(logger, "Extra: Moving to coord3...");
+            auto const c3_pose = [waypoint9_x, waypoint9_y, waypoint9_z, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint9_x;
+                msg.position.y = waypoint9_y;
+                msg.position.z = waypoint9_z;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c3_pose, "tool0");
+            auto const [ok_c3, plan_c3] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c3 || move_group_interface.execute(plan_c3) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord3 move failed"); return -1; }
+
+            // waypoint10
+            RCLCPP_INFO(logger, "Extra: Moving to coord4...");
+            auto const c4_pose = [waypoint10_x, waypoint10_y, waypoint10_z, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint10_x;
+                msg.position.y = waypoint10_y;
+                msg.position.z = waypoint10_z;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c4_pose, "tool0");
+            auto const [ok_c4, plan_c4] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c4 || move_group_interface.execute(plan_c4) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord4 move failed"); return -1; }
+
+            // back to waypoint9
+            RCLCPP_INFO(logger, "Extra: Returning to coord3...");
+            move_group_interface.setPoseTarget(c3_pose, "tool0");
+            auto const [ok_c3b, plan_c3b] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c3b || move_group_interface.execute(plan_c3b) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord3 (back) move failed"); return -1; }
+
+            // up 30mm at waypoint9
+            RCLCPP_INFO(logger, "Extra: Moving up %.0fmm from coord3...", z_offset * 1000.0);
+            auto const c3_up_pose = [waypoint9_x, waypoint9_y, waypoint9_z, z_offset, orientation_x, orientation_y, orientation_z, orientation_w]()
+            {
+                geometry_msgs::msg::Pose msg;
+                msg.position.x = waypoint9_x;
+                msg.position.y = waypoint9_y;
+                msg.position.z = waypoint9_z + z_offset;
+                msg.orientation.x = orientation_x;
+                msg.orientation.y = orientation_y;
+                msg.orientation.z = orientation_z;
+                msg.orientation.w = orientation_w;
+                return msg;
+            }();
+            move_group_interface.setPoseTarget(c3_up_pose, "tool0");
+            auto const [ok_c3u, plan_c3u] = [&move_group_interface]
+            {
+                moveit::planning_interface::MoveGroupInterface::Plan msg;
+                auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+                return std::make_pair(ok, msg);
+            }();
+            if (!ok_c3u || move_group_interface.execute(plan_c3u) != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+            { RCLCPP_ERROR(logger, "coord3 up move failed"); return -1; }
         }
         else
         {
@@ -720,6 +999,44 @@ int main(int argc, char *argv[])
         if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
         {
             RCLCPP_INFO(logger, "Moved to Waypoint 1!");
+            // ===== READ ORIENTATION FROM /housing/class_label =====
+            RCLCPP_INFO(logger, "Reading orientation from /housing/class_label...");
+            std_msgs::msg::String::SharedPtr latest_cls_msg = nullptr;
+            auto cls_sub = node->create_subscription<std_msgs::msg::String>(
+                "/housing/class_label", 10,
+                [&latest_cls_msg](const std_msgs::msg::String::SharedPtr msg) { latest_cls_msg = msg; });
+
+            auto cls_start = std::chrono::steady_clock::now();
+            while (rclcpp::ok())
+            {
+                rclcpp::spin_some(node);
+                if (latest_cls_msg)
+                {
+                    std::string label = latest_cls_msg->data;
+                    std::string orientation;
+                    if (label.find("bottomleft") != std::string::npos) orientation = "bottomleft";
+                    else if (label.find("bottomright") != std::string::npos) orientation = "bottomright";
+                    else if (label.find("topleft") != std::string::npos) orientation = "topleft";
+                    else if (label.find("topright") != std::string::npos) orientation = "topright";
+
+                    if (!orientation.empty())
+                    {
+                        RCLCPP_INFO(logger, "Classification orientation: %s", orientation.c_str());
+                    }
+                    else
+                    {
+                        RCLCPP_WARN(logger, "Received class label but no orientation token found: '%s'", label.c_str());
+                    }
+                    break;
+                }
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::seconds>(now - cls_start).count() > 3)
+                {
+                    RCLCPP_WARN(logger, "Timeout waiting for /housing/class_label");
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
         }
         else
         {
