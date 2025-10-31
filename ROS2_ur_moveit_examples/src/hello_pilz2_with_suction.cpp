@@ -38,8 +38,8 @@ int main(int argc, char *argv[])
     // Configure MoveGroup for Pilz planner
     move_group_interface.setPoseReferenceFrame("base_link");
     move_group_interface.setEndEffectorLink("tool0");
-    move_group_interface.setMaxVelocityScalingFactor(1);
-    move_group_interface.setMaxAccelerationScalingFactor(1);
+    move_group_interface.setMaxVelocityScalingFactor(0.5);  // Reduced for reliability
+    move_group_interface.setMaxAccelerationScalingFactor(0.5);  // Reduced for reliability
     move_group_interface.setWorkspace(-2.0, -2.0, 0.0, 2.0, 2.0, 2.0); // Prevent planning below base
 
     // Set the planning pipeline to use Pilz Industrial Motion Planner
@@ -79,29 +79,84 @@ int main(int argc, char *argv[])
     };
 
     RCLCPP_INFO(logger, "Starting custom motion sequence with suction gripper control");
-/*HEREHEREHERE1
-    // ===== JOINT MOVEMENT FUNCTION (matching pick_from_detection.cpp) =====
+    
+    // ===== JOINT MOVEMENT FUNCTION (using OMPL for joint space) =====
     auto plan_and_execute_joint = [&move_group_interface, &logger](const std::vector<double>& joint_positions, const std::string& description) -> bool
     {
-        RCLCPP_INFO(logger, "Planning joint move: %s", description.c_str());
-        RCLCPP_INFO(logger, "Joint positions (radians) -> [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+        RCLCPP_INFO(logger, "Joint move: %s", description.c_str());
+        RCLCPP_INFO(logger, "Target joints (rad): [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
                     joint_positions[0], joint_positions[1], joint_positions[2], 
                     joint_positions[3], joint_positions[4], joint_positions[5]);
+        
+        // Switch to OMPL for joint moves
+        move_group_interface.setPlanningPipelineId("ompl");
+        move_group_interface.setPlannerId("");  // Use default OMPL planner
+        move_group_interface.setPlanningTime(5.0);
+        move_group_interface.setNumPlanningAttempts(5);
+        
+        // Ensure start state is current
+        move_group_interface.startStateMonitor();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        move_group_interface.setStartStateToCurrentState();
         
         move_group_interface.setJointValueTarget(joint_positions);
         
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         if (!static_cast<bool>(move_group_interface.plan(plan)))
         {
-            RCLCPP_ERROR(logger, "Joint move planning failed");
+            RCLCPP_WARN(logger, "Direct joint plan failed. Trying intermediate waypoint...");
+            // Try intermediate waypoint if direct plan fails
+            auto current = move_group_interface.getCurrentJointValues();
+            if (current.size() == 6)
+            {
+                std::vector<double> mid(6);
+                for (size_t i = 0; i < 6; ++i) 
+                    mid[i] = current[i] + 0.5 * (joint_positions[i] - current[i]);
+                
+                move_group_interface.setJointValueTarget(mid);
+                moveit::planning_interface::MoveGroupInterface::Plan mid_plan;
+                if (static_cast<bool>(move_group_interface.plan(mid_plan)) && 
+                    move_group_interface.execute(mid_plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+                {
+                    // Now try final
+                    move_group_interface.setStartStateToCurrentState();
+                    move_group_interface.setJointValueTarget(joint_positions);
+                    if (!static_cast<bool>(move_group_interface.plan(plan)))
+                    {
+                        RCLCPP_ERROR(logger, "Joint move failed after intermediate waypoint");
+                        return false;
+                    }
+                }
+                else
+                {
+                    RCLCPP_ERROR(logger, "Intermediate waypoint move failed");
+                    return false;
+                }
+            }
+            else
+            {
+                RCLCPP_ERROR(logger, "Joint move planning failed - no current joint state");
+                return false;
+            }
+        }
+        
+        RCLCPP_INFO(logger, "Joint move plan computed. Executing...");
+        auto execute_result = move_group_interface.execute(plan);
+        if (execute_result != moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_ERROR(logger, "Joint move execution failed! Error code: %d", execute_result.val);
             return false;
         }
-        RCLCPP_INFO(logger, "Joint move plan computed. Executing...");
-        return static_cast<bool>(move_group_interface.execute(plan));
+        RCLCPP_INFO(logger, "Joint move completed successfully");
+        
+        // Switch back to Pilz for TCP moves
+        move_group_interface.setPlanningPipelineId("pilz_industrial_motion_planner");
+        move_group_interface.setPlannerId("PTP");
+        
+        return true;
     };
 
     // ===== WAYPOINT 0 JOINT POSITIONS =====
-    // Your specified joint values (in radians)
     // Format: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
     std::vector<double> waypoint0_joints = {
         -0.0036109129535120132,    // shoulder_pan_joint
@@ -111,7 +166,6 @@ int main(int argc, char *argv[])
         -1.5554221312152308,       // wrist_2_joint
         -0.037923638020650685      // wrist_3_joint
     };
-*/
     // ===== QUATERNION ROTATION FUNCTION =====
     auto apply_yaw_rotation = [](double yaw_degrees, double orig_x, double orig_y, double orig_z, double orig_w) -> std::tuple<double, double, double, double> {
         // Convert yaw degrees to radians
@@ -207,15 +261,14 @@ int main(int argc, char *argv[])
             RCLCPP_ERROR(logger, "Failed to get red DETECTED status - skipping cycle");
             continue;
         }
-/* HEREHEREHERE2
-        // ===== WAYPOINT 0: Move to joint positions first =====
-        RCLCPP_INFO(logger, "=== WAYPOINT 0: Moving to specified joint positions ===");
+        
+        // ===== WAYPOINT 0: Move to joint positions first (using OMPL) =====
+        RCLCPP_INFO(logger, "=== WAYPOINT 0: Moving to specified joint positions (OMPL) ===");
         if (!plan_and_execute_joint(waypoint0_joints, "Waypoint 0 joint positions")) {
             RCLCPP_ERROR(logger, "Waypoint 0 joint move failed - skipping cycle");
             continue;
         }
-        RCLCPP_INFO(logger, "Waypoint 0 reached successfully!");
-*/
+        RCLCPP_INFO(logger, "Waypoint 0 reached successfully! Switching to Pilz for TCP moves...");
         // ===== GET WAYPOINT 2 FROM TOPIC =====
         RCLCPP_INFO(logger, "Getting Waypoint 2 coordinates from /pin_housing/target_pose topic...");
         

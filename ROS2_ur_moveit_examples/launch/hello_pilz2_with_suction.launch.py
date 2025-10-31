@@ -109,33 +109,64 @@ def launch_setup(context, *args, **kwargs):
         [FindPackageShare(moveit_config_package), "config", "kinematics.yaml"]
     )
 
+    robot_description_planning_content = load_yaml_abs(str(joint_limit_params.perform(context)))
+    if robot_description_planning_content is None:
+        robot_description_planning_content = {}
     robot_description_planning = {
-      "robot_description_planning": load_yaml_abs(str(joint_limit_params.perform(context)))
+        "robot_description_planning": robot_description_planning_content
     }
 
-    # Planning Configuration for Pilz
-    pilz_planning_pipeline_config = {
-        "planning_pipelines": ["pilz_industrial_motion_planner"],
+    # Load OMPL planning configuration (for joint moves)
+    ompl_planning_yaml = load_yaml("ros2_ur_moveit_examples", "config/ompl_planning.yaml")
+    if ompl_planning_yaml is None:
+        ompl_planning_yaml = {}
+
+    # Planning Configuration with both OMPL and Pilz
+    planning_pipelines_config = {
+        "planning_pipelines": ["ompl", "pilz_industrial_motion_planner"],
         "default_planning_pipeline": "pilz_industrial_motion_planner",
+        "ompl": ompl_planning_yaml,
         "pilz_industrial_motion_planner": {},
         "move_group": {},
-        "robot_description_planning":{},
+        "robot_description_planning": {},
     }
+    
+    # Configure Pilz
     pilz_planning_yaml = load_yaml("ur_pilz_demo", "config/pilz_industrial_motion_planner_planning.yaml")
-    pilz_planning_pipeline_config["move_group"].update(pilz_planning_yaml)
-    pilz_planning_pipeline_config["pilz_industrial_motion_planner"].update(pilz_planning_yaml) 
+    if pilz_planning_yaml is not None:
+        planning_pipelines_config["move_group"].update(pilz_planning_yaml)
+        planning_pipelines_config["pilz_industrial_motion_planner"].update(pilz_planning_yaml) 
 
     pilz_cartesian_limits_yaml = load_yaml("ur_pilz_demo", "config/pilz_cartesian_limits.yaml")
-    pilz_planning_pipeline_config["robot_description_planning"].update(pilz_cartesian_limits_yaml)
+    if pilz_cartesian_limits_yaml is not None:
+        planning_pipelines_config["robot_description_planning"].update(pilz_cartesian_limits_yaml)
 
     # Trajectory Execution Configuration
     controllers_yaml = load_yaml("ur_pilz_demo", "config/controllers.yaml")
+    if controllers_yaml is None:
+        controllers_yaml = {}
+    
+    # Set joint_trajectory_controller as default (works with both Pilz and OMPL)
+    if controllers_yaml and "scaled_joint_trajectory_controller" in controllers_yaml:
+        controllers_yaml["scaled_joint_trajectory_controller"]["default"] = False
+    if controllers_yaml and "joint_trajectory_controller" in controllers_yaml:
+        controllers_yaml["joint_trajectory_controller"]["default"] = True
+    
+    # Reorder controller_names to prioritize joint_trajectory_controller
+    if controllers_yaml and "controller_names" in controllers_yaml:
+        controller_names_list = controllers_yaml["controller_names"]
+        if "joint_trajectory_controller" in controller_names_list:
+            controller_names_list.remove("joint_trajectory_controller")
+            controller_names_list.insert(0, "joint_trajectory_controller")
+        controllers_yaml["controller_names"] = controller_names_list
+    
     # the scaled_joint_trajectory_controller does not work on fake hardware
     change_controllers = context.perform_substitution(use_fake_hardware)
-    if change_controllers == "true":
-        controllers_yaml["scaled_joint_trajectory_controller"]["scaled_joint_trajectory_controller"] = {
-            "type": "joint_trajectory_controller/JointTrajectoryController"
-        }
+    if change_controllers == "true" and controllers_yaml:
+        if "scaled_joint_trajectory_controller" in controllers_yaml:
+            controllers_yaml["scaled_joint_trajectory_controller"]["scaled_joint_trajectory_controller"] = {
+                "type": "joint_trajectory_controller/JointTrajectoryController"
+            }
 
     moveit_controllers = {
         "moveit_controller_manager": "moveit_simple_controller_manager/MoveItSimpleControllerManager",
@@ -147,6 +178,8 @@ def launch_setup(context, *args, **kwargs):
         "trajectory_execution.allowed_execution_duration_scaling": 1.2,
         "trajectory_execution.allowed_goal_duration_margin": 0.5,
         "trajectory_execution.allowed_start_tolerance": 0.01,
+        "trajectory_execution.wait_for_trajectory_completion": True,
+        "trajectory_execution.controller_connection_timeout": 10.0,
     }
 
     planning_scene_monitor_parameters = {
@@ -164,7 +197,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            pilz_planning_pipeline_config,
+            planning_pipelines_config,
             robot_description_kinematics,
             robot_description_planning,
             moveit_controllers,
@@ -194,7 +227,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            pilz_planning_pipeline_config,
+            planning_pipelines_config,
             robot_description_kinematics,
             warehouse_config,
         ],
@@ -209,7 +242,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            pilz_planning_pipeline_config,
+            planning_pipelines_config,
             robot_description_kinematics,
             {"use_sim_time": use_sim_time},
         ],
