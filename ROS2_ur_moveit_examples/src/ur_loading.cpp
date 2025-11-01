@@ -19,6 +19,8 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <algorithm>
+#include <cctype>
 
 int main(int argc, char *argv[])
 {
@@ -156,17 +158,112 @@ int main(int argc, char *argv[])
         return true;
     };
 
-    // ===== WAYPOINT 0 JOINT POSITIONS =====
-    // Format: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
-    std::vector<double> waypoint0_joints = {
-        -0.0036109129535120132,    // shoulder_pan_joint
-        -2.1629932562457483,       // shoulder_lift_joint  
-        2.0472545623779297,        // elbow_joint
-        -1.4392817656146448,       // wrist_1_joint
-        -1.5554221312152308,       // wrist_2_joint
-        -0.037923638020650685      // wrist_3_joint
+    
+    // ===== YAW CORRECTION CALCULATION FUNCTION =====
+    // Calculates yaw correction based on orientation class and current yaw angle
+    // Returns correction angle in degrees: positive = CW, negative = CCW
+    auto calculate_yaw_correction = [](const std::string& orientation_class, double current_yaw) -> double {
+        // Normalize angle to -180 to 180 range
+        double theta = current_yaw;
+        while (theta > 180.0) theta -= 360.0;
+        while (theta < -180.0) theta += 360.0;
+        
+        // Convert orientation class to lowercase for case-insensitive matching
+        std::string orientation = orientation_class;
+        std::transform(orientation.begin(), orientation.end(), orientation.begin(), ::tolower);
+        
+        double correction = 0.0;
+        
+        // Top Right
+        if (orientation.find("topright") != std::string::npos) {
+            if (theta < 90.0) {
+                correction = 90.0 - theta;  // CW (+)
+            } else if (std::abs(theta - 90.0) < 0.1) {
+                correction = 0.0;  // No rotation
+            } else {  // theta > 90.0
+                correction = -(theta - 90.0);  // CCW (-)
+            }
+        }
+        // Top Bottom
+        else if (orientation.find("topbottom") != std::string::npos) {
+            if (theta > 90.0) {
+                correction = -(theta - 90.0);  // CCW (-)
+            } else if (std::abs(theta) < 0.1 || std::abs(std::abs(theta) - 180.0) < 0.1) {
+                correction = -90.0;  // CCW (-) 90 degrees
+            } else {  // theta < 90.0
+                correction = -(theta + 90.0);  // CCW (-)
+            }
+        }
+        // Top Left
+        else if (orientation.find("topleft") != std::string::npos) {
+            if (theta < 90.0) {
+                correction = -(theta + 90.0);  // CCW (-)
+            } else if (std::abs(theta - 90.0) < 0.1) {
+                correction = -180.0;  // CCW (-) 180 degrees
+            } else {  // theta > 90.0
+                correction = (270.0 - theta);  // CW (+)
+            }
+        }
+        // Top Top
+        else if (orientation.find("toptop") != std::string::npos) {
+            if (theta > 90.0) {
+                correction = (270.0 - theta);  // CW (+)
+            } else if (std::abs(theta) < 0.1 || std::abs(std::abs(theta) - 180.0) < 0.1) {
+                correction = 90.0;  // CW (+) 90 degrees
+            } else {  // theta < 90.0
+                correction = (90.0 - theta);  // CW (+)
+            }
+        }
+        // Bottom Right
+        else if (orientation.find("bottomright") != std::string::npos) {
+            if (theta < 90.0) {
+                correction = -(theta + 90.0);  // CCW (-)
+            } else if (std::abs(theta - 90.0) < 0.1) {
+                correction = 180.0;  // CW (+) 180 degrees
+            } else {  // theta > 90.0
+                correction = (270.0 - theta);  // CW (+)
+            }
+        }
+        // Bottom Bottom
+        else if (orientation.find("bottombottom") != std::string::npos) {
+            if (theta > 90.0) {
+                correction = (270.0 - theta);  // CW (+)
+            } else if (std::abs(theta) < 0.1 || std::abs(std::abs(theta) - 180.0) < 0.1) {
+                correction = 90.0;  // CW (+) 90 degrees
+            } else {  // theta < 90.0
+                correction = (90.0 - theta);  // CW (+)
+            }
+        }
+        // Bottom Left
+        else if (orientation.find("bottomleft") != std::string::npos) {
+            if (theta < 90.0) {
+                correction = (90.0 - theta);  // CW (+)
+            } else if (std::abs(theta - 90.0) < 0.1) {
+                correction = 0.0;  // No rotation
+            } else {  // theta > 90.0
+                correction = -(theta - 90.0);  // CCW (-)
+            }
+        }
+        // Bottom Top
+        else if (orientation.find("bottomtop") != std::string::npos) {
+            if (theta > 90.0) {
+                correction = -(theta - 90.0);  // CCW (-)
+            } else if (std::abs(theta) < 0.1 || std::abs(std::abs(theta) - 180.0) < 0.1) {
+                correction = -90.0;  // CCW (-) 90 degrees
+            } else {  // theta < 90.0
+                correction = -(theta + 90.0);  // CCW (-)
+            }
+        }
+        else {
+            // Unknown orientation - return 0 (no correction)
+            return 0.0;
+        }
+        
+        return correction;
     };
+
     // ===== QUATERNION ROTATION FUNCTION =====
+    // Note: yaw_degrees should be positive for CW, negative for CCW
     auto apply_yaw_rotation = [](double yaw_degrees, double orig_x, double orig_y, double orig_z, double orig_w) -> std::tuple<double, double, double, double> {
         // Convert yaw degrees to radians
         double yaw_rad = yaw_degrees * M_PI / 180.0;
@@ -250,11 +347,27 @@ int main(int argc, char *argv[])
         return false;
     };
 
+    // ===== WAYPOINT 0 JOINT POSITIONS =====
+    // Format: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+    std::vector<double> waypoint0_joints = {
+        -0.0036109129535120132,    // shoulder_pan_joint
+        -2.1629932562457483,       // shoulder_lift_joint  
+        2.0472545623779297,        // elbow_joint
+        -1.4392817656146448,       // wrist_1_joint
+        -1.5554221312152308,       // wrist_2_joint
+        -0.037923638020650685      // wrist_3_joint
+    };
+
     // ===== CONTINUOUS LOOP =====
     int cycle_count = 0;
     while (rclcpp::ok()) {
         cycle_count++;
         RCLCPP_INFO(logger, "=== STARTING CYCLE %d ===", cycle_count);
+
+        // Variables to store orientation data (captured early, used after lifting)
+        std::string stored_orientation_class = "";
+        double stored_current_yaw = 0.0;
+        bool has_orientation_data = false;
 
         // ===== WAIT FOR RED DETECTED =====
         if (!wait_for_red_detected()) {
@@ -269,6 +382,7 @@ int main(int argc, char *argv[])
             continue;
         }
         RCLCPP_INFO(logger, "Waypoint 0 reached successfully! Switching to Pilz for TCP moves...");
+        
         // ===== GET WAYPOINT 2 FROM TOPIC =====
         RCLCPP_INFO(logger, "Getting Waypoint 2 coordinates from /pin_housing/target_pose topic...");
         
@@ -308,40 +422,49 @@ int main(int argc, char *argv[])
         RCLCPP_INFO(logger, "Waypoint 3 coordinates: x=%.3f, y=%.3f, z=%.3f", 
                    waypoint3_x, waypoint3_y, waypoint3_z);
 
-        // ===== READ YAW ORIENTATION FROM TOPIC =====
-        RCLCPP_INFO(logger, "Reading yaw orientation from /pin_housing/pixel_pose topic...");
+        // ===== READ ORIENTATION CLASS AND YAW ANGLE (at the same time as getting Waypoint 3) =====
+        // This must be done here because after moving, the camera view will be blocked
+        RCLCPP_INFO(logger, "Reading orientation class and yaw angle for later correction...");
         
-        // Subscribe to pixel pose topic to get yaw orientation
+        // Read class label from segmentation node
+        std_msgs::msg::String::SharedPtr class_label_msg = nullptr;
+        auto class_subscription = node->create_subscription<std_msgs::msg::String>(
+            "/pin_housing/class_label", 10,
+            [&class_label_msg](const std_msgs::msg::String::SharedPtr msg) {
+                class_label_msg = msg;
+            });
+        
+        // Read current yaw from pixel pose
         std_msgs::msg::Float32MultiArray::SharedPtr pixel_pose_msg = nullptr;
-        auto pixel_subscription = node->create_subscription<std_msgs::msg::Float32MultiArray>(
+        auto pixel_pose_subscription = node->create_subscription<std_msgs::msg::Float32MultiArray>(
             "/pin_housing/pixel_pose", 10,
             [&pixel_pose_msg](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
                 pixel_pose_msg = msg;
             });
         
-        // Wait for pixel pose message (with timeout)
-        auto pixel_start_time = std::chrono::steady_clock::now();
-        while (!pixel_pose_msg && rclcpp::ok()) {
+        // Wait for both messages (with timeout)
+        auto orientation_start_time = std::chrono::steady_clock::now();
+        while ((!class_label_msg || !pixel_pose_msg) && rclcpp::ok()) {
             rclcpp::spin_some(node);
-            auto pixel_current_time = std::chrono::steady_clock::now();
-            auto pixel_elapsed = std::chrono::duration_cast<std::chrono::seconds>(pixel_current_time - pixel_start_time);
-            if (pixel_elapsed.count() > 3) {  // 3 second timeout
-                RCLCPP_ERROR(logger, "Timeout waiting for /pin_housing/pixel_pose message!");
-                return -1;
+            auto orientation_current_time = std::chrono::steady_clock::now();
+            auto orientation_elapsed = std::chrono::duration_cast<std::chrono::seconds>(orientation_current_time - orientation_start_time);
+            if (orientation_elapsed.count() > 3) {  // 3 second timeout
+                RCLCPP_WARN(logger, "Timeout waiting for class label or pixel pose - will use original orientation");
+                break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         
-        if (!pixel_pose_msg || pixel_pose_msg->data.size() < 3) {
-            RCLCPP_ERROR(logger, "Failed to get yaw orientation from pixel pose!");
-            return -1;
+        // Store orientation data for later use (variables declared at start of cycle loop)
+        if (class_label_msg && pixel_pose_msg && pixel_pose_msg->data.size() >= 3) {
+            stored_orientation_class = class_label_msg->data;
+            stored_current_yaw = pixel_pose_msg->data[2];
+            has_orientation_data = true;
+            RCLCPP_INFO(logger, "Orientation data captured - Class: '%s', Yaw: %.2f°", 
+                       stored_orientation_class.c_str(), stored_current_yaw);
+        } else {
+            RCLCPP_WARN(logger, "Could not read orientation data - will use original orientation later");
         }
-        
-        // Extract yaw orientation (3rd element: [u, v, yaw_deg])
-        double current_yaw = pixel_pose_msg->data[2];
-        double yaw_correction = 90.0 - current_yaw;  // Calculate correction to make yaw = 90°
-        
-        RCLCPP_INFO(logger, "Current yaw: %.2f°, Yaw correction needed: %.2f°", current_yaw, yaw_correction);
 
         // ===== INITIALIZATION: Go to Waypoint 1 from current position =====
     RCLCPP_INFO(logger, "Initialization: Moving to Waypoint 1 from current position...");
@@ -428,7 +551,7 @@ int main(int argc, char *argv[])
         auto execute_result = move_group_interface.execute(init_plan);
         if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
         {
-            RCLCPP_INFO(logger, "Waypoint 1 reached! Starting motion sequence...");
+            RCLCPP_INFO(logger, "Waypoint 1 reached!");
         }
         else
         {
@@ -631,8 +754,10 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // 7. Return to Waypoint 2 WITH OBJECT
-    RCLCPP_INFO(logger, "Step 7: Returning to Waypoint 2 with gripped object...");
+    // ===== NEW SEQUENCE: Move to Waypoint 2, then intermediate position and execute joint sequence =====
+    
+    // 7. Return to Waypoint 2
+    RCLCPP_INFO(logger, "Step 7: Returning to Waypoint 2 with object (original orientation)...");
     move_group_interface.setPoseTarget(waypoint2_pose, "tool0");
     
     auto const [success7, plan7] = [&move_group_interface]
@@ -662,9 +787,26 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // 8. Return to Waypoint 1 WITH OBJECT
-    RCLCPP_INFO(logger, "Step 8: Returning to Waypoint 1 with gripped object...");
-    move_group_interface.setPoseTarget(waypoint1_pose, "tool0");
+    // 8. Move to intermediate position
+    double intermediate_x = 0.19042828485402838;
+    double intermediate_y = 0.5995427932501025;
+    double intermediate_z = 0.3117300106544869;
+    
+    RCLCPP_INFO(logger, "Step 8: Moving to intermediate position (x=%.3f, y=%.3f, z=%.3f)...", 
+               intermediate_x, intermediate_y, intermediate_z);
+    auto const intermediate_pose = [intermediate_x, intermediate_y, intermediate_z, orientation_x, orientation_y, orientation_z, orientation_w]()
+    {
+        geometry_msgs::msg::Pose msg;
+        msg.position.x = intermediate_x;
+        msg.position.y = intermediate_y;
+        msg.position.z = intermediate_z;
+        msg.orientation.x = orientation_x;
+        msg.orientation.y = orientation_y;
+        msg.orientation.z = orientation_z;
+        msg.orientation.w = orientation_w;
+        return msg;
+    }();
+    move_group_interface.setPoseTarget(intermediate_pose, "tool0");
     
     auto const [success8, plan8] = [&move_group_interface]
     {
@@ -675,11 +817,164 @@ int main(int argc, char *argv[])
 
     if (success8)
     {
-        RCLCPP_INFO(logger, "Waypoint 1 planning successful! Executing...");
+        RCLCPP_INFO(logger, "Intermediate position planning successful! Executing...");
         auto execute_result = move_group_interface.execute(plan8);
         if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
         {
-            RCLCPP_INFO(logger, "Waypoint 1 reached with object!");
+            RCLCPP_INFO(logger, "Intermediate position reached!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Intermediate position execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(logger, "Intermediate position planning failed!");
+        return -1;
+    }
+
+    // 9. Execute joint sequence (3 joint moves: Sets 3, 4, and 5)
+    RCLCPP_INFO(logger, "Step 9: Executing forward joint sequence...");
+    
+    // Joint position sets 
+    // User provided order: [shoulder_lift, elbow, wrist_1, wrist_2, wrist_3, shoulder_pan]
+    // Standard UR order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+    std::vector<std::vector<double>> joint_sequence = {
+        // Set 3: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        {1.0157181024551392, -1.3367255369769495, 1.745710849761963, -2.48492938676943, -1.4261038939105433, 1.5937026739120483},
+        // Set 4: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        {0.8890299201011658, -1.3253091017352503, 1.8641610145568848, -2.855262104664938, -1.1843927542315882, 1.6333327293395996},
+        // Set 5: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        {0.7889522314071655, -1.2256062666522425, 1.8942508697509766, -3.1070922056781214, -1.0089710394488733, 1.6938257217407227}
+    };
+    
+    for (size_t i = 0; i < joint_sequence.size(); ++i) {
+        RCLCPP_INFO(logger, "Executing joint move %zu/%zu...", i+1, joint_sequence.size());
+        if (!plan_and_execute_joint(joint_sequence[i], "Joint sequence forward " + std::to_string(i+1))) {
+            RCLCPP_ERROR(logger, "Joint sequence forward %zu failed!", i+1);
+            return -1;
+        }
+    }
+    RCLCPP_INFO(logger, "Forward joint sequence completed!");
+
+    // 10. Release vacuum (and blow for bottom orientation)
+    RCLCPP_INFO(logger, "Step 10: Turning OFF Channel 0 (suction)...");
+    set_suction(false);  // Channel 0 LOW (suction off)
+    
+    // Wait 1 second for object to be released
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    RCLCPP_INFO(logger, "Object released! Suction OFF.");
+    
+    // Conditional blow for bottom orientation
+    std::string orientation_lower = stored_orientation_class;
+    std::transform(orientation_lower.begin(), orientation_lower.end(), orientation_lower.begin(), ::tolower);
+    
+    if (has_orientation_data && (orientation_lower.find("bottom") != std::string::npos)) {
+        RCLCPP_INFO(logger, "Detected 'bottom' orientation - Activating blow (Channel 1)...");
+        set_blow(true);  // Channel 1 HIGH (blow ON)
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        RCLCPP_INFO(logger, "Blow activated!");
+        set_blow(false);  // Channel 1 LOW (blow OFF)
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        RCLCPP_INFO(logger, "Blow deactivated!");
+    } else {
+        RCLCPP_INFO(logger, "Detected 'top' orientation or no data - Skipping blow activation.");
+    }
+
+    // 11. Reverse joint sequence (go back through Set 5, Set 4, Set 3)
+    RCLCPP_INFO(logger, "Step 11: Executing reverse joint sequence...");
+    for (size_t i = joint_sequence.size(); i > 0; --i) {
+        size_t idx = i - 1;
+        RCLCPP_INFO(logger, "Executing reverse joint move %zu/%zu...", joint_sequence.size() - idx, joint_sequence.size());
+        if (!plan_and_execute_joint(joint_sequence[idx], "Joint sequence reverse " + std::to_string(joint_sequence.size() - idx))) {
+            RCLCPP_ERROR(logger, "Joint sequence reverse %zu failed!", joint_sequence.size() - idx);
+            return -1;
+        }
+    }
+    RCLCPP_INFO(logger, "Reverse joint sequence completed!");
+
+    // 12. Move back to intermediate position (with default orientation)
+    RCLCPP_INFO(logger, "Step 12: Moving back to intermediate position with default orientation...");
+    move_group_interface.setPoseTarget(intermediate_pose, "tool0");
+    
+    auto const [success12, plan12] = [&move_group_interface]
+    {
+        moveit::planning_interface::MoveGroupInterface::Plan msg;
+        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+        return std::make_pair(ok, msg);
+    }();
+
+    if (success12)
+    {
+        RCLCPP_INFO(logger, "Intermediate position planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan12);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Intermediate position reached!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Intermediate position execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(logger, "Intermediate position planning failed!");
+        return -1;
+    }
+
+    // 13. Return to Waypoint 2 (with default orientation)
+    RCLCPP_INFO(logger, "Step 13: Returning to Waypoint 2 with default orientation...");
+    move_group_interface.setPoseTarget(waypoint2_pose, "tool0");
+    
+    auto const [success13, plan13] = [&move_group_interface]
+    {
+        moveit::planning_interface::MoveGroupInterface::Plan msg;
+        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+        return std::make_pair(ok, msg);
+    }();
+
+    if (success13)
+    {
+        RCLCPP_INFO(logger, "Waypoint 2 planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan13);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Waypoint 2 reached!");
+        }
+        else
+        {
+            RCLCPP_ERROR(logger, "Waypoint 2 execution failed! Error code: %d", execute_result.val);
+            return -1;
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(logger, "Waypoint 2 planning failed!");
+        return -1;
+    }
+
+    // 14. Return to Waypoint 1 (with default orientation)
+    RCLCPP_INFO(logger, "Step 14: Returning to Waypoint 1 with default orientation...");
+    move_group_interface.setPoseTarget(waypoint1_pose, "tool0");
+    
+    auto const [success14, plan14] = [&move_group_interface]
+    {
+        moveit::planning_interface::MoveGroupInterface::Plan msg;
+        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
+        return std::make_pair(ok, msg);
+    }();
+
+    if (success14)
+    {
+        RCLCPP_INFO(logger, "Waypoint 1 planning successful! Executing...");
+        auto execute_result = move_group_interface.execute(plan14);
+        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
+        {
+            RCLCPP_INFO(logger, "Waypoint 1 reached!");
         }
         else
         {
@@ -692,14 +987,7 @@ int main(int argc, char *argv[])
         RCLCPP_ERROR(logger, "Waypoint 1 planning failed!");
         return -1;
     }
-
-    // 9. TURN OFF SUCTION (wait 1 second)
-    RCLCPP_INFO(logger, "Step 9: Turning OFF Channel 0 (suction) and waiting 1 second...");
-    set_suction(false);  // Channel 0 LOW (suction off)
     
-    // Wait 1 second for object to be released
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    RCLCPP_INFO(logger, "Object released! Suction OFF.");
 
     RCLCPP_INFO(logger, "=== CYCLE %d COMPLETED SUCCESSFULLY! ===", cycle_count);
     
