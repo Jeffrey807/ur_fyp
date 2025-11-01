@@ -133,6 +133,11 @@ target_include_directories(hello_pilz2_with_suction PUBLIC include)
 ament_target_dependencies(hello_pilz2_with_suction moveit_common moveit_core moveit_ros_planning moveit_ros_planning_interface rviz_visual_tools moveit_visual_tools rclcpp std_msgs ur_msgs)
 install(TARGETS hello_pilz2_with_suction DESTINATION lib/${PROJECT_NAME})
 
+add_executable(ur_loading src/ur_loading.cpp)
+target_include_directories(ur_loading PUBLIC include)
+ament_target_dependencies(ur_loading moveit_common moveit_core moveit_ros_planning moveit_ros_planning_interface rviz_visual_tools moveit_visual_tools rclcpp std_msgs ur_msgs)
+install(TARGETS ur_loading DESTINATION lib/${PROJECT_NAME})
+
 # Minimal joint-move verifier
 add_executable(test_joint_move src/test_joint_move.cpp)
 target_include_directories(test_joint_move PUBLIC include)
