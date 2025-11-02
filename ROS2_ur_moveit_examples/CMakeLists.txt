@@ -95,6 +95,13 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# Install Python scripts
+install(
+  PROGRAMS
+    robot_plc_interlock.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(TARGETS hello_moveit kinematics check_collisions planning_scene planning_scene_service
   DESTINATION lib/${PROJECT_NAME})
 

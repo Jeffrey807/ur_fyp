@@ -56,6 +56,26 @@ int main(int argc, char *argv[])
     // Wait for IO service to be available (simplified)
     io_client->wait_for_service(std::chrono::seconds(5));
     RCLCPP_INFO(logger, "IO service ready for commands");
+    
+    // ===== PLC INTERLOCK PUBLISHERS =====
+    // Publisher for signaling Python interlock node to initialize (set coil 8194 to LOW at startup)
+    auto interlock_init_publisher = node->create_publisher<std_msgs::msg::Bool>("/init_interlock_startup", 10);
+    // Publisher for signaling Python interlock node to set coil LOW when red is detected (Step 7.5)
+    auto interlock_set_low_publisher = node->create_publisher<std_msgs::msg::Bool>("/set_interlock_low", 10);
+    // Publisher for signaling Python interlock node to set coil HIGH when red is NOT detected (Step 7.5)
+    auto interlock_set_high_publisher = node->create_publisher<std_msgs::msg::Bool>("/set_interlock_high", 10);
+    // Publisher for signaling Python interlock node to check red detection after Waypoint 2
+    auto interlock_reset_publisher = node->create_publisher<std_msgs::msg::Bool>("/reset_interlock_after_waypoint2", 10);
+    RCLCPP_INFO(logger, "PLC interlock publishers created");
+    
+    // ===== INITIALIZE PLC INTERLOCK AT STARTUP =====
+    // Set PLC coil 8194 to LOW (0) when program starts - unlock other robot
+    RCLCPP_INFO(logger, "Initializing PLC interlock: Setting coil 8194 to LOW (0) at startup...");
+    std_msgs::msg::Bool init_msg;
+    init_msg.data = true;
+    interlock_init_publisher->publish(init_msg);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // Give time for message to be sent
+    RCLCPP_INFO(logger, "PLC interlock initialization signal sent - coil 8194 should be set to LOW");
 
     // Function to control suction gripper (Channel 0) - Simplified
     auto set_suction = [&io_client, &logger](bool suction_on) -> void
@@ -287,8 +307,8 @@ int main(int argc, char *argv[])
     };
 
     // ===== RED DETECTION WAIT FUNCTION =====
-    auto wait_for_red_detected = [&node, &logger]() -> bool {
-        RCLCPP_INFO(logger, "Waiting for red DETECTED for 1 second...");
+    auto wait_for_red_detected = [&node, &logger, &interlock_set_high_publisher]() -> bool {
+        RCLCPP_INFO(logger, "Waiting for red DETECTED for 2 seconds...");
         
         // Subscribe to red detection topic
         std_msgs::msg::Bool::SharedPtr latest_red_msg = nullptr;
@@ -298,9 +318,11 @@ int main(int argc, char *argv[])
                 latest_red_msg = msg;
             });
         
-        auto start_time = std::chrono::steady_clock::now();
         auto red_detected_start = std::chrono::steady_clock::now();
+        auto red_not_detected_start = std::chrono::steady_clock::now();
         bool red_detected_timer_started = false;
+        bool red_not_detected_timer_started = false;
+        bool high_signal_sent = false;  // Track if we've already sent HIGH signal
         
         while (rclcpp::ok()) {
             rclcpp::spin_some(node);
@@ -309,42 +331,164 @@ int main(int argc, char *argv[])
                 bool red_detected = latest_red_msg->data;
                 
                 if (red_detected) {
-                    // Red detected - start/continue timer
+                    // Red detected - start/continue timer for red detection
                     if (!red_detected_timer_started) {
                         red_detected_start = std::chrono::steady_clock::now();
                         red_detected_timer_started = true;
-                        RCLCPP_INFO(logger, "Red DETECTED - starting 1 second timer...");
+                        red_not_detected_timer_started = false;  // Reset NOT detected timer
+                        high_signal_sent = false;  // Reset HIGH signal flag when red is detected
+                        RCLCPP_INFO(logger, "Red DETECTED - starting 2 second timer...");
                     } else {
-                        // Check if 1 second has passed
+                        // Check if 2 seconds have passed
                         auto current_time = std::chrono::steady_clock::now();
                         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - red_detected_start);
                         
-                        if (elapsed.count() >= 1000) {  // 1 second
-                            RCLCPP_INFO(logger, "Red DETECTED for 1 second - proceeding with motion!");
+                        if (elapsed.count() >= 2000) {  // 2 seconds
+                            RCLCPP_INFO(logger, "Red DETECTED for 2 seconds - proceeding with motion!");
                             return true;
                         }
                     }
                 } else {
-                    // Red not detected - reset timer
+                    // Red not detected - start timer for NOT detected
                     if (red_detected_timer_started) {
-                        RCLCPP_INFO(logger, "Red NOT detected - resetting timer...");
+                        RCLCPP_INFO(logger, "Red NOT detected - resetting red detection timer...");
                         red_detected_timer_started = false;
                     }
+                    
+                    // Start timer for red NOT detected
+                    if (!red_not_detected_timer_started) {
+                        red_not_detected_start = std::chrono::steady_clock::now();
+                        red_not_detected_timer_started = true;
+                        RCLCPP_INFO(logger, "Red NOT detected - starting 1 second timer...");
+                    } else {
+                        // Check if 1 second has passed with red NOT detected
+                        auto current_time = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - red_not_detected_start);
+                        
+                        if (elapsed.count() >= 1000 && !high_signal_sent) {  // 1 second and haven't sent signal yet
+                            RCLCPP_INFO(logger, "Red NOT detected for 1 second - Setting PLC interlock coil 8194 to HIGH (1)...");
+                            std_msgs::msg::Bool set_high_msg;
+                            set_high_msg.data = true;
+                            interlock_set_high_publisher->publish(set_high_msg);
+                            high_signal_sent = true;
+                            RCLCPP_INFO(logger, "Interlock HIGH signal sent - Other robot blocked");
+                        }
+                    }
                 }
-            }
-            
-            // Check for overall timeout (30 seconds)
-            auto current_time = std::chrono::steady_clock::now();
-            auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
-            if (total_elapsed.count() > 30) {
-                RCLCPP_ERROR(logger, "Timeout waiting for red DETECTED!");
-                return false;
+            } else {
+                // No red detection message received yet - start timer for NOT detected
+                if (!red_not_detected_timer_started) {
+                    red_not_detected_start = std::chrono::steady_clock::now();
+                    red_not_detected_timer_started = true;
+                    RCLCPP_INFO(logger, "No red detection data - starting 1 second timer...");
+                } else {
+                    // Check if 1 second has passed without red detection message
+                    auto current_time = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - red_not_detected_start);
+                    
+                    if (elapsed.count() >= 1000 && !high_signal_sent) {  // 1 second and haven't sent signal yet
+                        RCLCPP_INFO(logger, "No red detection data for 1 second - Setting PLC interlock coil 8194 to HIGH (1)...");
+                        std_msgs::msg::Bool set_high_msg;
+                        set_high_msg.data = true;
+                        interlock_set_high_publisher->publish(set_high_msg);
+                        high_signal_sent = true;
+                        RCLCPP_INFO(logger, "Interlock HIGH signal sent - Other robot blocked");
+                    }
+                }
             }
             
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         
         return false;
+    };
+
+    // ===== CHECK RED NOT DETECTED FOR 1 SECOND (for Step 12.5) =====
+    auto check_red_not_detected_for_1_second = [&node, &logger, &interlock_set_high_publisher]() -> void {
+        RCLCPP_INFO(logger, "Checking if red is NOT detected for 1 second...");
+        
+        // Subscribe to red detection topic
+        std_msgs::msg::Bool::SharedPtr latest_red_msg = nullptr;
+        auto red_subscription = node->create_subscription<std_msgs::msg::Bool>(
+            "/red_detected", 10,
+            [&latest_red_msg](const std_msgs::msg::Bool::SharedPtr msg) {
+                latest_red_msg = msg;
+            });
+        
+        auto red_not_detected_start = std::chrono::steady_clock::now();
+        bool red_not_detected_timer_started = false;
+        bool high_signal_sent = false;
+        
+        // Wait for 1 second checking red detection status
+        auto check_start = std::chrono::steady_clock::now();
+        while (rclcpp::ok()) {
+            rclcpp::spin_some(node);
+            
+            // Check if we've been checking for more than 2 seconds (safety timeout)
+            auto current_time = std::chrono::steady_clock::now();
+            auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - check_start);
+            if (total_elapsed.count() > 2) {
+                break;  // Safety timeout
+            }
+            
+            if (latest_red_msg) {
+                bool red_detected = latest_red_msg->data;
+                
+                if (!red_detected) {
+                    // Red not detected - start timer
+                    if (!red_not_detected_timer_started) {
+                        red_not_detected_start = std::chrono::steady_clock::now();
+                        red_not_detected_timer_started = true;
+                        RCLCPP_INFO(logger, "Red NOT detected - starting 1 second timer...");
+                    } else {
+                        // Check if 1 second has passed with red NOT detected
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - red_not_detected_start);
+                        
+                        if (elapsed.count() >= 1000 && !high_signal_sent) {  // 1 second
+                            RCLCPP_INFO(logger, "Red NOT detected for 1 second - Setting PLC interlock coil 8194 to HIGH (1)...");
+                            std_msgs::msg::Bool set_high_msg;
+                            set_high_msg.data = true;
+                            interlock_set_high_publisher->publish(set_high_msg);
+                            high_signal_sent = true;
+                            RCLCPP_INFO(logger, "Interlock HIGH signal sent - Other robot blocked");
+                            break;  // Exit after sending signal
+                        }
+                    }
+                } else {
+                    // Red detected - reset timer
+                    if (red_not_detected_timer_started) {
+                        RCLCPP_INFO(logger, "Red detected - resetting NOT detected timer...");
+                        red_not_detected_timer_started = false;
+                        high_signal_sent = false;
+                    }
+                }
+            } else {
+                // No red detection message - treat as NOT detected
+                if (!red_not_detected_timer_started) {
+                    red_not_detected_start = std::chrono::steady_clock::now();
+                    red_not_detected_timer_started = true;
+                    RCLCPP_INFO(logger, "No red detection data - starting 1 second timer...");
+                } else {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - red_not_detected_start);
+                    
+                    if (elapsed.count() >= 1000 && !high_signal_sent) {  // 1 second
+                        RCLCPP_INFO(logger, "No red detection data for 1 second - Setting PLC interlock coil 8194 to HIGH (1)...");
+                        std_msgs::msg::Bool set_high_msg;
+                        set_high_msg.data = true;
+                        interlock_set_high_publisher->publish(set_high_msg);
+                        high_signal_sent = true;
+                        RCLCPP_INFO(logger, "Interlock HIGH signal sent - Other robot blocked");
+                        break;  // Exit after sending signal
+                    }
+                }
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        
+        if (!high_signal_sent) {
+            RCLCPP_INFO(logger, "Red detection check completed - Red was detected, keeping interlock LOW");
+        }
     };
 
     // ===== WAYPOINT 0 JOINT POSITIONS =====
@@ -393,12 +537,6 @@ int main(int argc, char *argv[])
         std::string stored_orientation_class = "";
         double stored_current_yaw = 0.0;
         bool has_orientation_data = false;
-
-        // ===== WAIT FOR RED DETECTED =====
-        if (!wait_for_red_detected()) {
-            RCLCPP_ERROR(logger, "Failed to get red DETECTED status - skipping cycle");
-            continue;
-        }
         
         // ===== READ ORIENTATION DATA (early, for later use before vacuum release) =====
         RCLCPP_INFO(logger, "Reading orientation class and yaw angle for correction...");
@@ -417,12 +555,9 @@ int main(int argc, char *argv[])
                 pixel_pose_msg_pre = msg;
             });
         
-        auto orientation_start_pre = std::chrono::steady_clock::now();
+        // Wait indefinitely until we get both messages
         while ((!class_label_msg || !pixel_pose_msg_pre) && rclcpp::ok()) {
             rclcpp::spin_some(node);
-            auto elapsed_pre = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - orientation_start_pre);
-            if (elapsed_pre.count() > 3) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         
@@ -447,16 +582,9 @@ int main(int argc, char *argv[])
                 waypoint2_pose_msg = msg;
             });
         
-        // Wait for one message (with timeout)
-        auto start_time = std::chrono::steady_clock::now();
+        // Wait indefinitely until we get the message
         while (!waypoint2_pose_msg && rclcpp::ok()) {
             rclcpp::spin_some(node);
-            auto current_time = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
-            if (elapsed.count() > 5) {  // 5 second timeout
-                RCLCPP_ERROR(logger, "Timeout waiting for /pin_housing/pixel_pose message!");
-                return -1;
-            }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         
@@ -799,6 +927,20 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+    // 7.5. Wait for Red Detection (moved from pre-sequence)
+    RCLCPP_INFO(logger, "Step 7.5: Waiting for red DETECTED...");
+    if (!wait_for_red_detected()) {
+        RCLCPP_ERROR(logger, "Failed to get red DETECTED status - skipping cycle");
+        continue;
+    }
+    
+    // Red detected for 2 seconds - Set PLC interlock coil 8194 to LOW (0) to unlock other robot
+    RCLCPP_INFO(logger, "Red detected for 2 seconds - Setting PLC interlock coil 8194 to LOW (0)...");
+    std_msgs::msg::Bool set_low_msg;
+    set_low_msg.data = true;
+    interlock_set_low_publisher->publish(set_low_msg);
+    RCLCPP_INFO(logger, "Interlock LOW signal sent - Other robot can proceed");
+
     // 8. Move to intermediate position - COMMENTED OUT
     /*
     double intermediate_x = 0.19042828485402838;
@@ -1088,6 +1230,10 @@ int main(int argc, char *argv[])
         return -1;
     }
     RCLCPP_INFO(logger, "Waypoint 2 joint positions reached!");
+    
+    // 12.5. Check if red is NOT detected for 1 second and set PLC interlock HIGH if needed
+    RCLCPP_INFO(logger, "Step 12.5: Checking red detection status...");
+    check_red_not_detected_for_1_second();
 
     // 13. Return to Waypoint 1 (with default orientation, TCP move)
     RCLCPP_INFO(logger, "Step 13: Returning to Waypoint 1 with default orientation...");
