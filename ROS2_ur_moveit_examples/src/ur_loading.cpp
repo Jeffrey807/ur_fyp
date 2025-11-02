@@ -21,6 +21,7 @@
 #include <std_msgs/msg/string.hpp>
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 
 int main(int argc, char *argv[])
 {
@@ -96,9 +97,8 @@ int main(int argc, char *argv[])
         move_group_interface.setPlanningTime(5.0);
         move_group_interface.setNumPlanningAttempts(5);
         
-        // Ensure start state is current
+        // Ensure start state is current (no delay needed - state is fresh from previous execution)
         move_group_interface.startStateMonitor();
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         move_group_interface.setStartStateToCurrentState();
         
         move_group_interface.setJointValueTarget(joint_positions);
@@ -371,6 +371,18 @@ int main(int argc, char *argv[])
         1.0943129062652588          // wrist_3_joint
     };
 
+    // ===== WAYPOINT 2 APPROXIMATE JOINT POSITIONS (for return sequence) =====
+    // User provided order: [shoulder_lift, elbow, wrist_1, wrist_2, wrist_3, shoulder_pan]
+    // MoveIt order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+    std::vector<double> waypoint2_joints = {
+        0.905205249786377,          // shoulder_pan_joint (last in user order)
+        -1.5454686323748987,        // shoulder_lift_joint (first in user order)
+        1.8361940383911133,         // elbow_joint
+        -1.863520924245016,         // wrist_1_joint
+        -1.548624340687887,         // wrist_2_joint
+        0.8704494833946228          // wrist_3_joint
+    };
+
     // ===== CONTINUOUS LOOP =====
     int cycle_count = 0;
     while (rclcpp::ok()) {
@@ -388,15 +400,7 @@ int main(int argc, char *argv[])
             continue;
         }
         
-        // ===== WAYPOINT 0: Move to joint positions first (using OMPL) =====
-        RCLCPP_INFO(logger, "=== WAYPOINT 0: Moving to specified joint positions (OMPL) ===");
-        if (!plan_and_execute_joint(waypoint0_joints, "Waypoint 0 joint positions")) {
-            RCLCPP_ERROR(logger, "Waypoint 0 joint move failed - skipping cycle");
-            continue;
-        }
-        RCLCPP_INFO(logger, "Waypoint 0 reached successfully!");
-        
-        // ===== READ ORIENTATION DATA (while camera can see) =====
+        // ===== READ ORIENTATION DATA (early, for later use before vacuum release) =====
         RCLCPP_INFO(logger, "Reading orientation class and yaw angle for correction...");
         
         std_msgs::msg::String::SharedPtr class_label_msg = nullptr;
@@ -428,212 +432,6 @@ int main(int argc, char *argv[])
             has_orientation_data = true;
             RCLCPP_INFO(logger, "Orientation captured: Class='%s', Yaw=%.2f°", 
                        stored_orientation_class.c_str(), stored_current_yaw);
-        }
-        
-        // ===== APPLY YAW ORIENTATION CORRECTION USING JOINT 6 (wrist_3_joint) DIRECT CONTROL =====
-        // COMMENTED OUT: TCP-based orientation fix
-        /*
-        // This rotates around tool's local Z-axis, working regardless of current tool orientation
-        if (has_orientation_data) {
-            double yaw_correction_deg = calculate_yaw_correction(stored_orientation_class, stored_current_yaw);
-            ...
-        }
-        */
-        
-        // NEW: Joint-based orientation fix - directly control joint 6 (wrist_3_joint) only
-        if (has_orientation_data) {
-            double yaw_correction_deg = calculate_yaw_correction(stored_orientation_class, stored_current_yaw);
-            RCLCPP_INFO(logger, "Yaw correction: %.2f° (%s)", 
-                       std::abs(yaw_correction_deg), yaw_correction_deg >= 0 ? "CW" : "CCW");
-            
-            if (std::abs(yaw_correction_deg) > 0.1) {
-                // Get current joint values
-                std::vector<double> current_joints = move_group_interface.getCurrentJointValues();
-                std::vector<std::string> joint_names = move_group_interface.getJointNames();
-                
-                // Find wrist_3_joint index dynamically
-                size_t wrist_3_idx = SIZE_MAX;
-                for (size_t i = 0; i < joint_names.size(); ++i) {
-                    if (joint_names[i] == "wrist_3_joint") {
-                        wrist_3_idx = i;
-                        break;
-                    }
-                }
-                
-                if (wrist_3_idx == SIZE_MAX || wrist_3_idx >= current_joints.size()) {
-                    RCLCPP_ERROR(logger, "Could not find wrist_3_joint! Available joints:");
-                    for (size_t i = 0; i < joint_names.size(); ++i) {
-                        RCLCPP_ERROR(logger, "  [%zu] %s", i, joint_names[i].c_str());
-                    }
-                    RCLCPP_WARN(logger, "Skipping orientation correction - cannot find wrist_3_joint");
-                } else {
-                    RCLCPP_INFO(logger, "Found wrist_3_joint at index %zu", wrist_3_idx);
-                    RCLCPP_INFO(logger, "Current wrist_3_joint value: %.6f rad (%.2f°)", 
-                               current_joints[wrist_3_idx], current_joints[wrist_3_idx] * 180.0 / M_PI);
-                    
-                    // Create corrected joint values: only modify wrist_3_joint
-                    std::vector<double> corrected_joints = current_joints;  // Copy all current joints
-                    
-                    // Convert yaw correction from degrees to radians and add to wrist_3
-                    // Positive correction = CW = positive rotation in joint space
-                    double yaw_correction_rad = yaw_correction_deg * M_PI / 180.0;
-                    corrected_joints[wrist_3_idx] += yaw_correction_rad;
-                    
-                    // Normalize to [-pi, pi] range
-                    while (corrected_joints[wrist_3_idx] > M_PI) corrected_joints[wrist_3_idx] -= 2.0 * M_PI;
-                    while (corrected_joints[wrist_3_idx] < -M_PI) corrected_joints[wrist_3_idx] += 2.0 * M_PI;
-                    
-                    RCLCPP_INFO(logger, "Corrected wrist_3_joint value: %.6f rad (%.2f°)", 
-                               corrected_joints[wrist_3_idx], corrected_joints[wrist_3_idx] * 180.0 / M_PI);
-                    RCLCPP_INFO(logger, "Change: %.6f rad (%.2f°)", 
-                               yaw_correction_rad, yaw_correction_deg);
-                    
-                    // Verify ONLY wrist_3 changed
-                    bool only_wrist3_changed = true;
-                    for (size_t i = 0; i < corrected_joints.size(); ++i) {
-                        if (i != wrist_3_idx && std::abs(corrected_joints[i] - current_joints[i]) > 0.0001) {
-                            RCLCPP_ERROR(logger, "ERROR: Joint %zu (%s) changed! This should not happen!", 
-                                       i, joint_names[i].c_str());
-                            only_wrist3_changed = false;
-                        }
-                    }
-                    
-                    if (only_wrist3_changed) {
-                        // Use OMPL for joint move
-                        if (!plan_and_execute_joint(corrected_joints, "Orientation correction (wrist_3_joint only)")) {
-                            RCLCPP_ERROR(logger, "Orientation correction joint move failed!");
-                        } else {
-                            RCLCPP_INFO(logger, "Orientation correction applied successfully by rotating wrist_3_joint!");
-                        }
-                    } else {
-                        RCLCPP_ERROR(logger, "Aborting orientation correction - multiple joints would change!");
-                    }
-                }
-            } else {
-                RCLCPP_INFO(logger, "No correction needed (correction < 0.1°), skipping orientation adjustment.");
-            }
-        } else {
-            RCLCPP_WARN(logger, "No orientation data available - skipping orientation correction");
-        }
-        
-        // ===== RETURN TO ORIGINAL WAYPOINT 0 JOINT POSITIONS =====
-        // After orientation fix, return to original Waypoint 0 joint positions before moving to Waypoint 0.1
-        RCLCPP_INFO(logger, "Returning to original Waypoint 0 joint positions after orientation fix...");
-        if (!plan_and_execute_joint(waypoint0_joints, "Return to Waypoint 0 (original joints)")) {
-            RCLCPP_ERROR(logger, "Failed to return to Waypoint 0 - skipping cycle");
-            continue;
-        }
-        RCLCPP_INFO(logger, "Back at original Waypoint 0 joint positions.");
-        
-        // ===== WAYPOINT 0.1: Move to joint positions (using OMPL) =====
-        RCLCPP_INFO(logger, "=== WAYPOINT 0.1: Moving to specified joint positions (OMPL) ===");
-        if (!plan_and_execute_joint(waypoint0_1_joints, "Waypoint 0.1 joint positions")) {
-            RCLCPP_ERROR(logger, "Waypoint 0.1 joint move failed - skipping cycle");
-            continue;
-        }
-        RCLCPP_INFO(logger, "Waypoint 0.1 reached successfully!");
-        
-        // ===== APPLY YAW ORIENTATION CORRECTION AT WAYPOINT 0.1 (JOINT-BASED) =====
-        // CRITICAL FIX: Use waypoint0_1_joints directly instead of getCurrentJointValues()
-        // This prevents stale state issue where getCurrentJointValues() returns Waypoint 0 values
-        if (has_orientation_data) {
-            double yaw_correction_deg = calculate_yaw_correction(stored_orientation_class, stored_current_yaw);
-            RCLCPP_INFO(logger, "Yaw correction at Waypoint 0.1: %.2f° (%s)", 
-                       std::abs(yaw_correction_deg), yaw_correction_deg >= 0 ? "CW" : "CCW");
-            
-            if (std::abs(yaw_correction_deg) > 0.1) {
-                // Wait a moment to ensure robot has settled after joint move
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                
-                // CRITICAL: Get joint names to find wrist_3_joint index
-                std::vector<std::string> joint_names = move_group_interface.getJointNames();
-                
-                // Find wrist_3_joint index dynamically
-                size_t wrist_3_idx = SIZE_MAX;
-                for (size_t i = 0; i < joint_names.size(); ++i) {
-                    if (joint_names[i] == "wrist_3_joint") {
-                        wrist_3_idx = i;
-                        break;
-                    }
-                }
-                
-                if (wrist_3_idx == SIZE_MAX || wrist_3_idx >= waypoint0_1_joints.size()) {
-                    RCLCPP_ERROR(logger, "Could not find wrist_3_joint! Available joints:");
-                    for (size_t i = 0; i < joint_names.size(); ++i) {
-                        RCLCPP_ERROR(logger, "  [%zu] %s", i, joint_names[i].c_str());
-                    }
-                    RCLCPP_WARN(logger, "Skipping orientation correction - cannot find wrist_3_joint");
-                } else {
-                    RCLCPP_INFO(logger, "Found wrist_3_joint at index %zu", wrist_3_idx);
-                    
-                    // CRITICAL FIX: Use waypoint0_1_joints directly instead of getCurrentJointValues()
-                    // This ensures we're working from the ACTUAL Waypoint 0.1 position, not stale state
-                    std::vector<double> corrected_joints = waypoint0_1_joints;  // Use known Waypoint 0.1 joints
-                    
-                    RCLCPP_INFO(logger, "Using Waypoint 0.1 base joints: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
-                               corrected_joints[0], corrected_joints[1], corrected_joints[2],
-                               corrected_joints[3], corrected_joints[4], corrected_joints[5]);
-                    RCLCPP_INFO(logger, "Original wrist_3_joint value at Waypoint 0.1: %.6f rad (%.2f°)", 
-                               corrected_joints[wrist_3_idx], corrected_joints[wrist_3_idx] * 180.0 / M_PI);
-                    
-                    // Convert yaw correction from degrees to radians and add to wrist_3
-                    // Positive correction = CW = positive rotation in joint space
-                    double yaw_correction_rad = yaw_correction_deg * M_PI / 180.0;
-                    corrected_joints[wrist_3_idx] += yaw_correction_rad;
-                    
-                    // Normalize to [-pi, pi] range
-                    while (corrected_joints[wrist_3_idx] > M_PI) corrected_joints[wrist_3_idx] -= 2.0 * M_PI;
-                    while (corrected_joints[wrist_3_idx] < -M_PI) corrected_joints[wrist_3_idx] += 2.0 * M_PI;
-                    
-                    RCLCPP_INFO(logger, "Corrected wrist_3_joint value: %.6f rad (%.2f°)", 
-                               corrected_joints[wrist_3_idx], corrected_joints[wrist_3_idx] * 180.0 / M_PI);
-                    RCLCPP_INFO(logger, "Change: %.6f rad (%.2f°)", 
-                               yaw_correction_rad, yaw_correction_deg);
-                    
-                    // Verify ONLY wrist_3 changed compared to base Waypoint 0.1
-                    bool only_wrist3_changed = true;
-                    for (size_t i = 0; i < corrected_joints.size(); ++i) {
-                        if (i != wrist_3_idx && std::abs(corrected_joints[i] - waypoint0_1_joints[i]) > 0.0001) {
-                            RCLCPP_ERROR(logger, "ERROR: Joint %zu (%s) changed! This should not happen!", 
-                                       i, joint_names[i].c_str());
-                            only_wrist3_changed = false;
-                        }
-                    }
-                    
-                    // CRITICAL: Also verify corrected_joints are NOT equal to waypoint0_joints (to prevent moving back to Waypoint 0)
-                    bool matches_waypoint0 = true;
-                    for (size_t i = 0; i < corrected_joints.size(); ++i) {
-                        if (i != wrist_3_idx && std::abs(corrected_joints[i] - waypoint0_joints[i]) > 0.001) {
-                            matches_waypoint0 = false;
-                            break;
-                        }
-                    }
-                    // Only check wrist_3 if all other joints match Waypoint 0
-                    if (matches_waypoint0 && std::abs(corrected_joints[wrist_3_idx] - waypoint0_joints[wrist_3_idx]) < 0.1) {
-                        RCLCPP_ERROR(logger, "CRITICAL: Corrected joints match Waypoint 0! This would move robot back to Waypoint 0!");
-                        RCLCPP_ERROR(logger, "Waypoint 0 joints: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
-                                   waypoint0_joints[0], waypoint0_joints[1], waypoint0_joints[2],
-                                   waypoint0_joints[3], waypoint0_joints[4], waypoint0_joints[5]);
-                        RCLCPP_ERROR(logger, "Corrected joints: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
-                                   corrected_joints[0], corrected_joints[1], corrected_joints[2],
-                                   corrected_joints[3], corrected_joints[4], corrected_joints[5]);
-                        RCLCPP_ERROR(logger, "ABORTING to prevent moving back to Waypoint 0!");
-                    } else if (only_wrist3_changed) {
-                        // Use OMPL for joint move
-                        if (!plan_and_execute_joint(corrected_joints, "Orientation correction at Waypoint 0.1 (wrist_3_joint only)")) {
-                            RCLCPP_ERROR(logger, "Orientation correction joint move failed!");
-                        } else {
-                            RCLCPP_INFO(logger, "Orientation correction applied successfully at Waypoint 0.1 by rotating wrist_3_joint!");
-                        }
-                    } else {
-                        RCLCPP_ERROR(logger, "Aborting orientation correction - multiple joints would change!");
-                    }
-                }
-            } else {
-                RCLCPP_INFO(logger, "No correction needed at Waypoint 0.1 (correction < 0.1°), skipping orientation adjustment.");
-            }
-        } else {
-            RCLCPP_WARN(logger, "No orientation data available - skipping orientation correction at Waypoint 0.1");
         }
         
         RCLCPP_INFO(logger, "Switching to Pilz for TCP moves...");
@@ -1001,7 +799,8 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // 8. Move to intermediate position
+    // 8. Move to intermediate position - COMMENTED OUT
+    /*
     double intermediate_x = 0.19042828485402838;
     double intermediate_y = 0.5995427932501025;
     double intermediate_z = 0.3117300106544869;
@@ -1048,116 +847,107 @@ int main(int argc, char *argv[])
         RCLCPP_ERROR(logger, "Intermediate position planning failed!");
         return -1;
     }
+    */
+    
+    // Define intermediate_pose for later use in return sequence
+    double intermediate_x = 0.19042828485402838;
+    double intermediate_y = 0.5995427932501025;
+    double intermediate_z = 0.3117300106544869;
+    auto const intermediate_pose = [intermediate_x, intermediate_y, intermediate_z, orientation_x, orientation_y, orientation_z, orientation_w]()
+    {
+        geometry_msgs::msg::Pose msg;
+        msg.position.x = intermediate_x;
+        msg.position.y = intermediate_y;
+        msg.position.z = intermediate_z;
+        msg.orientation.x = orientation_x;
+        msg.orientation.y = orientation_y;
+        msg.orientation.z = orientation_z;
+        msg.orientation.w = orientation_w;
+        return msg;
+    }();
 
-    // 9. Execute joint sequence (3 joint moves: Sets 3, 4, and 5)
-    RCLCPP_INFO(logger, "Step 9: Executing forward joint sequence...");
+    // 9. Execute joint sequence (2 joint moves: Sets 4 and 5, Set 3 COMMENTED OUT)
+    // OPTIMIZATION: Apply orientation compensation directly to Set 5 target, not as separate step
+    RCLCPP_INFO(logger, "Step 9: Executing forward joint sequence (Set 4 → Set 5 with orientation compensation, Set 3 skipped)...");
     
     // Joint position sets 
     // User provided order: [shoulder_lift, elbow, wrist_1, wrist_2, wrist_3, shoulder_pan]
     // Standard UR order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+    // NOTE: Set 3 is commented out in forward sequence but kept for reverse sequence
     std::vector<std::vector<double>> joint_sequence = {
-        // Set 3: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        // Set 3: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3] - COMMENTED OUT in forward, kept for reverse
         {1.0157181024551392, -1.3367255369769495, 1.745710849761963, -2.48492938676943, -1.4261038939105433, 1.5937026739120483},
         // Set 4: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
         {0.8890299201011658, -1.3253091017352503, 1.8641610145568848, -2.855262104664938, -1.1843927542315882, 1.6333327293395996},
-        // Set 5: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
-        {0.7889522314071655, -1.2256062666522425, 1.8942508697509766, -3.1070922056781214, -1.0089710394488733, 1.6938257217407227}
+        // Set 5: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3] - UPDATED
+        {0.7784405946731567, -1.171955410634176, 1.8949699401855469, -3.1571925322162073, -1.0007088820086878, 1.6858445405960083}
     };
     
-    for (size_t i = 0; i < joint_sequence.size(); ++i) {
-        RCLCPP_INFO(logger, "Executing joint move %zu/%zu...", i+1, joint_sequence.size());
-        if (!plan_and_execute_joint(joint_sequence[i], "Joint sequence forward " + std::to_string(i+1))) {
-            RCLCPP_ERROR(logger, "Joint sequence forward %zu failed!", i+1);
-            return -1;
+    // ===== APPLY ORIENTATION COMPENSATION DIRECTLY TO SET 5 TARGET =====
+    // Get joint names and find wrist_3_joint index once, before the loop
+    std::vector<std::string> joint_names = move_group_interface.getJointNames();
+    size_t wrist_3_idx = SIZE_MAX;
+    for (size_t i = 0; i < joint_names.size(); ++i) {
+        if (joint_names[i] == "wrist_3_joint") {
+            wrist_3_idx = i;
+            break;
         }
     }
-    RCLCPP_INFO(logger, "Forward joint sequence completed!");
-
-    // ===== APPLY YAW ORIENTATION CORRECTION BEFORE VACUUM RELEASE (JOINT-BASED) =====
-    // CRITICAL FIX: Use Set 5 joint positions directly instead of getCurrentJointValues()
-    // This prevents stale state issue where getCurrentJointValues() returns wrong values
-    if (has_orientation_data) {
+    
+    // Create a copy of joint_sequence for execution (with orientation compensation applied to Set 5)
+    std::vector<std::vector<double>> joint_sequence_to_execute = joint_sequence;
+    
+    if (wrist_3_idx != SIZE_MAX && wrist_3_idx < joint_sequence[2].size() && has_orientation_data) {
         double yaw_correction_deg = calculate_yaw_correction(stored_orientation_class, stored_current_yaw);
-        RCLCPP_INFO(logger, "Yaw correction before vacuum release: %.2f° (%s)", 
-                   std::abs(yaw_correction_deg), yaw_correction_deg >= 0 ? "CW" : "CCW");
         
         if (std::abs(yaw_correction_deg) > 0.1) {
-            // Wait a moment to ensure robot has settled after joint sequence
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            RCLCPP_INFO(logger, "Applying yaw correction to Set 5: %.2f° (%s)", 
+                       std::abs(yaw_correction_deg), yaw_correction_deg >= 0 ? "CW" : "CCW");
             
-            // CRITICAL: Get joint names to find wrist_3_joint index
-            std::vector<std::string> joint_names = move_group_interface.getJointNames();
+            // Apply correction directly to Set 5 (index 2) wrist_3_joint
+            double yaw_correction_rad = yaw_correction_deg * M_PI / 180.0;
+            joint_sequence_to_execute[2][wrist_3_idx] += yaw_correction_rad;
             
-            // Find wrist_3_joint index dynamically
-            size_t wrist_3_idx = SIZE_MAX;
-            for (size_t i = 0; i < joint_names.size(); ++i) {
-                if (joint_names[i] == "wrist_3_joint") {
-                    wrist_3_idx = i;
-                    break;
-                }
-            }
+            // Normalize to [-pi, pi] range
+            while (joint_sequence_to_execute[2][wrist_3_idx] > M_PI) 
+                joint_sequence_to_execute[2][wrist_3_idx] -= 2.0 * M_PI;
+            while (joint_sequence_to_execute[2][wrist_3_idx] < -M_PI) 
+                joint_sequence_to_execute[2][wrist_3_idx] += 2.0 * M_PI;
             
-            // Set 5 is the last joint sequence position (index 2)
-            if (wrist_3_idx == SIZE_MAX || wrist_3_idx >= joint_sequence[2].size()) {
-                RCLCPP_ERROR(logger, "Could not find wrist_3_joint! Available joints:");
-                for (size_t i = 0; i < joint_names.size(); ++i) {
-                    RCLCPP_ERROR(logger, "  [%zu] %s", i, joint_names[i].c_str());
-                }
-                RCLCPP_WARN(logger, "Skipping orientation correction - cannot find wrist_3_joint");
-            } else {
-                RCLCPP_INFO(logger, "Found wrist_3_joint at index %zu", wrist_3_idx);
-                
-                // CRITICAL FIX: Use Set 5 joint positions directly instead of getCurrentJointValues()
-                // This ensures we're working from the ACTUAL Set 5 position, not stale state
-                std::vector<double> corrected_joints = joint_sequence[2];  // Use known Set 5 joints
-                
-                RCLCPP_INFO(logger, "Using Set 5 base joints: [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
-                           corrected_joints[0], corrected_joints[1], corrected_joints[2],
-                           corrected_joints[3], corrected_joints[4], corrected_joints[5]);
-                RCLCPP_INFO(logger, "Original wrist_3_joint value at Set 5: %.6f rad (%.2f°)", 
-                           corrected_joints[wrist_3_idx], corrected_joints[wrist_3_idx] * 180.0 / M_PI);
-                
-                // Convert yaw correction from degrees to radians and add to wrist_3
-                // Positive correction = CW = positive rotation in joint space
-                double yaw_correction_rad = yaw_correction_deg * M_PI / 180.0;
-                corrected_joints[wrist_3_idx] += yaw_correction_rad;
-                
-                // Normalize to [-pi, pi] range
-                while (corrected_joints[wrist_3_idx] > M_PI) corrected_joints[wrist_3_idx] -= 2.0 * M_PI;
-                while (corrected_joints[wrist_3_idx] < -M_PI) corrected_joints[wrist_3_idx] += 2.0 * M_PI;
-                
-                RCLCPP_INFO(logger, "Corrected wrist_3_joint value: %.6f rad (%.2f°)", 
-                           corrected_joints[wrist_3_idx], corrected_joints[wrist_3_idx] * 180.0 / M_PI);
-                RCLCPP_INFO(logger, "Change: %.6f rad (%.2f°)", 
-                           yaw_correction_rad, yaw_correction_deg);
-                
-                // Verify ONLY wrist_3 changed compared to base Set 5
-                bool only_wrist3_changed = true;
-                for (size_t i = 0; i < corrected_joints.size(); ++i) {
-                    if (i != wrist_3_idx && std::abs(corrected_joints[i] - joint_sequence[2][i]) > 0.0001) {
-                        RCLCPP_ERROR(logger, "ERROR: Joint %zu (%s) changed! This should not happen!", 
-                                   i, joint_names[i].c_str());
-                        only_wrist3_changed = false;
-                    }
-                }
-                
-                if (only_wrist3_changed) {
-                    // Use OMPL for joint move
-                    if (!plan_and_execute_joint(corrected_joints, "Orientation correction before vacuum release (wrist_3_joint only)")) {
-                        RCLCPP_ERROR(logger, "Orientation correction joint move failed!");
-                    } else {
-                        RCLCPP_INFO(logger, "Orientation correction applied successfully before vacuum release by rotating wrist_3_joint!");
-                    }
-                } else {
-                    RCLCPP_ERROR(logger, "Aborting orientation correction - multiple joints would change!");
-                }
-            }
+            RCLCPP_INFO(logger, "Set 5 original wrist_3: %.6f rad (%.2f°)", 
+                       joint_sequence[2][wrist_3_idx], joint_sequence[2][wrist_3_idx] * 180.0 / M_PI);
+            RCLCPP_INFO(logger, "Set 5 corrected wrist_3: %.6f rad (%.2f°)", 
+                       joint_sequence_to_execute[2][wrist_3_idx], joint_sequence_to_execute[2][wrist_3_idx] * 180.0 / M_PI);
         } else {
-            RCLCPP_INFO(logger, "No correction needed before vacuum release (correction < 0.1°), skipping orientation adjustment.");
+            RCLCPP_INFO(logger, "No orientation correction needed (correction < 0.1°), using original Set 5.");
         }
     } else {
-        RCLCPP_WARN(logger, "No orientation data available - skipping orientation correction before vacuum release");
+        if (wrist_3_idx == SIZE_MAX) {
+            RCLCPP_WARN(logger, "Could not find wrist_3_joint - using original Set 5 without correction");
+        } else if (!has_orientation_data) {
+            RCLCPP_WARN(logger, "No orientation data available - using original Set 5 without correction");
+        }
     }
+    
+    // Forward joint sequence: Start from index 1 (Set 4), skip Set 3 (index 0)
+    std::vector<size_t> forward_sequence_indices = {1, 2};  // Set 4, Set 5
+    
+    for (size_t seq_idx = 0; seq_idx < forward_sequence_indices.size(); ++seq_idx) {
+        size_t i = forward_sequence_indices[seq_idx];
+        RCLCPP_INFO(logger, "Executing joint move %zu/%zu (Set %zu)...", seq_idx+1, forward_sequence_indices.size(), i+1);
+        if (i == 2) {  // Set 5 - use corrected version
+            if (!plan_and_execute_joint(joint_sequence_to_execute[i], "Joint sequence forward " + std::to_string(seq_idx+1) + " (Set " + std::to_string(i+1) + " with orientation compensation)")) {
+                RCLCPP_ERROR(logger, "Joint sequence forward %zu (Set %zu) failed!", seq_idx+1, i+1);
+                return -1;
+            }
+        } else {  // Set 4 - use original
+            if (!plan_and_execute_joint(joint_sequence[i], "Joint sequence forward " + std::to_string(seq_idx+1) + " (Set " + std::to_string(i+1) + ")")) {
+                RCLCPP_ERROR(logger, "Joint sequence forward %zu (Set %zu) failed!", seq_idx+1, i+1);
+                return -1;
+            }
+        }
+    }
+    RCLCPP_INFO(logger, "Forward joint sequence completed! (Set 4 → Set 5 with orientation compensation)");
 
     // 10. Release vacuum (and blow for bottom orientation)
     RCLCPP_INFO(logger, "Step 10: Turning OFF Channel 0 (suction)...");
@@ -1166,99 +956,141 @@ int main(int argc, char *argv[])
     // Wait 1 second for object to be released
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     RCLCPP_INFO(logger, "Object released! Suction OFF.");
+
+    // 11. Reverse joint sequence (move directly to Set 4, skip Set 5 since we're already there)
+    RCLCPP_INFO(logger, "Step 11: Executing reverse joint sequence (moving directly to Set 4, skipping Set 5)...");
+    // After orientation fix and release, we're already at Set 5, so go directly to Set 4
+    // Set 4 is at index 1
+    RCLCPP_INFO(logger, "Executing reverse joint move (Set 4)...");
+    if (!plan_and_execute_joint(joint_sequence[1], "Joint sequence reverse Set 4")) {
+        RCLCPP_ERROR(logger, "Joint sequence reverse Set 4 failed!");
+        return -1;
+    }
+    RCLCPP_INFO(logger, "Reverse joint sequence completed! (Directly to Set 4)");
+
+    // Conditional joint sequence for bottom orientation (instead of blow)
+    // Check if orientation class string starts with "bottom" or "top"
+    // Valid classes: 'bottombottom', 'bottomleft', 'bottomright', 'bottomtop', 'topbottom', 'topleft', 'topright', 'toptop'
+    bool should_execute_bottom = false;
     
-    // Conditional blow for bottom orientation
-    std::string orientation_lower = stored_orientation_class;
-    std::transform(orientation_lower.begin(), orientation_lower.end(), orientation_lower.begin(), ::tolower);
-    
-    if (has_orientation_data && (orientation_lower.find("bottom") != std::string::npos)) {
-        RCLCPP_INFO(logger, "Detected 'bottom' orientation - Activating blow (Channel 1)...");
-        set_blow(true);  // Channel 1 HIGH (blow ON)
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        RCLCPP_INFO(logger, "Blow activated!");
-        set_blow(false);  // Channel 1 LOW (blow OFF)
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        RCLCPP_INFO(logger, "Blow deactivated!");
+    if (has_orientation_data && !stored_orientation_class.empty()) {
+        // Convert to lowercase for case-insensitive comparison
+        std::string orientation_lower = stored_orientation_class;
+        std::transform(orientation_lower.begin(), orientation_lower.end(), orientation_lower.begin(), ::tolower);
+        
+        // Check if string starts with "bottom"
+        should_execute_bottom = (orientation_lower.find("bottom") == 0);
+        
+        RCLCPP_INFO(logger, "Orientation classification: Class='%s' (lowercase='%s'), Starts with 'bottom'? %s", 
+                   stored_orientation_class.c_str(), orientation_lower.c_str(), 
+                   should_execute_bottom ? "YES - Executing bottom sequence" : "NO - Skipping bottom sequence");
     } else {
-        RCLCPP_INFO(logger, "Detected 'top' orientation or no data - Skipping blow activation.");
+        RCLCPP_WARN(logger, "No orientation data available: has_orientation_data=%d, class='%s'", 
+                   has_orientation_data, stored_orientation_class.c_str());
     }
-
-    // 11. Reverse joint sequence (go back through Set 5, Set 4, Set 3)
-    RCLCPP_INFO(logger, "Step 11: Executing reverse joint sequence...");
-    for (size_t i = joint_sequence.size(); i > 0; --i) {
-        size_t idx = i - 1;
-        RCLCPP_INFO(logger, "Executing reverse joint move %zu/%zu...", joint_sequence.size() - idx, joint_sequence.size());
-        if (!plan_and_execute_joint(joint_sequence[idx], "Joint sequence reverse " + std::to_string(joint_sequence.size() - idx))) {
-            RCLCPP_ERROR(logger, "Joint sequence reverse %zu failed!", joint_sequence.size() - idx);
-            return -1;
-        }
-    }
-    RCLCPP_INFO(logger, "Reverse joint sequence completed!");
-
-    // 12. Move back to intermediate position (with default orientation)
-    RCLCPP_INFO(logger, "Step 12: Moving back to intermediate position with default orientation...");
-    move_group_interface.setPoseTarget(intermediate_pose, "tool0");
     
-    auto const [success12, plan12] = [&move_group_interface]
-    {
-        moveit::planning_interface::MoveGroupInterface::Plan msg;
-        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
-        return std::make_pair(ok, msg);
-    }();
-
-    if (success12)
-    {
-        RCLCPP_INFO(logger, "Intermediate position planning successful! Executing...");
-        auto execute_result = move_group_interface.execute(plan12);
-        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
-        {
-            RCLCPP_INFO(logger, "Intermediate position reached!");
-        }
-        else
-        {
-            RCLCPP_ERROR(logger, "Intermediate position execution failed! Error code: %d", execute_result.val);
+    if (should_execute_bottom) {
+        RCLCPP_INFO(logger, "*** CONDITION MET: Class starts with 'bottom' - Executing bottom sequence! ***");
+        // Joint move between Set 4 and bottom sequence (only for bottom orientation)
+        // User provided order: [shoulder_lift, elbow, wrist_1, wrist_2, wrist_3, shoulder_pan]
+        // MoveIt order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        std::vector<double> pre_bottom_intermediate_joints = {
+            1.2461328506469727,        // shoulder_pan_joint (last in user order)
+            -0.9604228178607386,       // shoulder_lift_joint (first in user order)
+            1.143284797668457,         // elbow_joint
+            -1.6187623182879847,       // wrist_1_joint
+            -2.3182864824878138,       // wrist_2_joint
+            1.6663473844528198          // wrist_3_joint
+        };
+        
+        RCLCPP_INFO(logger, "Moving to intermediate position before conditional bottom sequence...");
+        if (!plan_and_execute_joint(pre_bottom_intermediate_joints, "Pre-bottom orientation intermediate position")) {
+            RCLCPP_ERROR(logger, "Pre-bottom orientation intermediate position failed!");
             return -1;
         }
+        RCLCPP_INFO(logger, "Pre-bottom intermediate position reached!");
+        
+        RCLCPP_INFO(logger, "Detected 'bottom' orientation - Executing additional joint sequence...");
+        
+        // Intermediate joint position between Set 4 and bottom sequence
+        // User provided order: [shoulder_lift, elbow, wrist_1, wrist_2, wrist_3, shoulder_pan]
+        // MoveIt order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        std::vector<double> bottom_intermediate_joints = {
+            1.204429268836975,         // shoulder_pan_joint (last in user order)
+            -0.9643128553973597,       // shoulder_lift_joint (first in user order)
+            1.2435078620910645,        // elbow_joint
+            -1.754063908253805,        // wrist_1_joint
+            -2.32298452058901,          // wrist_2_joint
+            1.6091736555099487          // wrist_3_joint
+        };
+        
+        RCLCPP_INFO(logger, "Moving to intermediate position before bottom joint sequence...");
+        if (!plan_and_execute_joint(bottom_intermediate_joints, "Bottom orientation intermediate position")) {
+            RCLCPP_ERROR(logger, "Bottom orientation intermediate position failed!");
+            return -1;
+        }
+        RCLCPP_INFO(logger, "Intermediate position reached!");
+        
+        // Additional joint moves for bottom orientation
+        // User provided order: [shoulder_lift, elbow, wrist_1, wrist_2, wrist_3, shoulder_pan]
+        // MoveIt order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        std::vector<std::vector<double>> bottom_joint_sequence = {
+            // Move 1: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+            {1.2037932872772217, -0.9647210280047815, 1.2454023361206055, -1.7563183943377894, -2.322517220173971, 1.608406662940979},
+            // Move 2: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+            {1.1907035112380981, -1.0042412916766565, 1.2717208862304688, -1.7551067511187952, -2.3237159887896937, 1.590611219406128},
+            // Move 3: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+            {1.1907395124435425, -1.004265610371725, 1.2717208862304688, -1.7550233046161097, -2.323751989995138, -1.4020584265338343}
+        };
+        
+        // Execute bottom sequence with vacuum control
+        for (size_t i = 0; i < bottom_joint_sequence.size(); ++i) {
+            // Turn vacuum ON before move 2 (12b)
+            if (i == 1) {  // Before position 2 (index 1)
+                RCLCPP_INFO(logger, "Turning ON Channel 0 (suction) before bottom position 2...");
+                set_suction(true);  // Channel 0 HIGH (suction ON)
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                RCLCPP_INFO(logger, "Suction ON! Waiting for vacuum to engage...");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // Additional delay for vacuum to fully engage (total 2 seconds)
+                RCLCPP_INFO(logger, "Vacuum engaged. Proceeding to position 2...");
+            }
+            
+            RCLCPP_INFO(logger, "Executing bottom orientation joint move %zu/%zu...", i+1, bottom_joint_sequence.size());
+            if (!plan_and_execute_joint(bottom_joint_sequence[i], "Bottom orientation joint move " + std::to_string(i+1))) {
+                RCLCPP_ERROR(logger, "Bottom orientation joint move %zu failed!", i+1);
+                return -1;
+            }
+            
+            // Turn vacuum OFF after move 3 (12d)
+            if (i == 2) {  // After position 3 (index 2)
+                RCLCPP_INFO(logger, "Turning OFF Channel 0 (suction) after bottom position 3...");
+                set_suction(false);  // Channel 0 LOW (suction OFF)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));  // Wait 1 second for vacuum to disengage
+                RCLCPP_INFO(logger, "Suction OFF!");
+            }
+        }
+        RCLCPP_INFO(logger, "Bottom orientation joint sequence completed!");
+    } else {
+        if (has_orientation_data && !stored_orientation_class.empty()) {
+            std::string orientation_lower = stored_orientation_class;
+            std::transform(orientation_lower.begin(), orientation_lower.end(), orientation_lower.begin(), ::tolower);
+            RCLCPP_INFO(logger, "Detected '%s' orientation (starts with 'top') - Skipping bottom orientation joint sequence.", 
+                       stored_orientation_class.c_str());
+        } else {
+            RCLCPP_INFO(logger, "No orientation data available - Skipping bottom orientation joint sequence.");
+        }
     }
-    else
-    {
-        RCLCPP_ERROR(logger, "Intermediate position planning failed!");
+
+    // 12. Move directly to Waypoint 2 joint positions (using OMPL)
+    RCLCPP_INFO(logger, "Step 12: Moving directly to Waypoint 2 joint positions (OMPL)...");
+    if (!plan_and_execute_joint(waypoint2_joints, "Waypoint 2 joint positions (return)")) {
+        RCLCPP_ERROR(logger, "Waypoint 2 joint move failed - skipping cycle");
         return -1;
     }
+    RCLCPP_INFO(logger, "Waypoint 2 joint positions reached!");
 
-    // 13. Return to Waypoint 2 (with default orientation)
-    RCLCPP_INFO(logger, "Step 13: Returning to Waypoint 2 with default orientation...");
-    move_group_interface.setPoseTarget(waypoint2_pose, "tool0");
-    
-    auto const [success13, plan13] = [&move_group_interface]
-    {
-        moveit::planning_interface::MoveGroupInterface::Plan msg;
-        auto const ok = static_cast<bool>(move_group_interface.plan(msg));
-        return std::make_pair(ok, msg);
-    }();
-
-    if (success13)
-    {
-        RCLCPP_INFO(logger, "Waypoint 2 planning successful! Executing...");
-        auto execute_result = move_group_interface.execute(plan13);
-        if (execute_result == moveit::planning_interface::MoveItErrorCode::SUCCESS)
-        {
-            RCLCPP_INFO(logger, "Waypoint 2 reached!");
-        }
-        else
-        {
-            RCLCPP_ERROR(logger, "Waypoint 2 execution failed! Error code: %d", execute_result.val);
-            return -1;
-        }
-    }
-    else
-    {
-        RCLCPP_ERROR(logger, "Waypoint 2 planning failed!");
-        return -1;
-    }
-
-    // 14. Return to Waypoint 1 (with default orientation)
-    RCLCPP_INFO(logger, "Step 14: Returning to Waypoint 1 with default orientation...");
+    // 13. Return to Waypoint 1 (with default orientation, TCP move)
+    RCLCPP_INFO(logger, "Step 13: Returning to Waypoint 1 with default orientation...");
     move_group_interface.setPoseTarget(waypoint1_pose, "tool0");
     
     auto const [success14, plan14] = [&move_group_interface]
