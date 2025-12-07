@@ -596,7 +596,7 @@ int main(int argc, char *argv[])
         // Apply coordinate transformation: flip x and y signs, set fixed z
         double waypoint3_x = -waypoint2_pose_msg->pose.position.x;
         double waypoint3_y = -waypoint2_pose_msg->pose.position.y;
-        double waypoint3_z = 0.265;  // Fixed z coordinate
+        double waypoint3_z = 0.26;  // Fixed z coordinate
         
         RCLCPP_INFO(logger, "Received coordinates: x=%.3f, y=%.3f, z=%.3f", 
                    waypoint2_pose_msg->pose.position.x, waypoint2_pose_msg->pose.position.y, waypoint2_pose_msg->pose.position.z);
@@ -1022,8 +1022,9 @@ int main(int argc, char *argv[])
         // Set 4: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
         {0.8890299201011658, -1.3253091017352503, 1.8641610145568848, -2.855262104664938, -1.1843927542315882, 1.6333327293395996},
         // Set 5: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3] - UPDATED
-        //{0.7784405946731567, -1.171955410634176, 1.8949699401855469, -3.1571925322162073, -1.0007088820086878, 1.6858445405960083}
-        {0.7656245827674866, -1.1484244505511683, 1.9010744094848633, -3.30683404604067, -0.9399197737323206, 1.7567863464355469}
+        // {0.7784405946731567, -1.171955410634176, 1.8949699401855469, -3.1571925322162073, -1.0007088820086878, 1.6858445405960083}
+        //{0.7656245827674866, -1.1484244505511683, 1.9010744094848633, -3.30683404604067, -0.9399197737323206, 1.7567863464355469}
+        {0.7784645557403564, -1.1538146177874964, 1.9036774635314941, -3.1840203444110315, -1.0006488005267542, 1.6858326196670532}
     };
     
     // ===== APPLY ORIENTATION COMPENSATION DIRECTLY TO SET 5 TARGET =====
@@ -1179,7 +1180,8 @@ int main(int argc, char *argv[])
         // MoveIt order: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
         std::vector<std::vector<double>> bottom_joint_sequence = {
             // Move 1: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
-            {1.2037932872772217, -0.9647210280047815, 1.2454023361206055, -1.7563183943377894, -2.322517220173971, 1.608406662940979},
+            // {1.2037932872772217, -0.9647210280047815, 1.2454023361206055, -1.7563183943377894, -2.322517220173971, 1.608406662940979},
+            {1.1970387697219849, -0.96312410036195935, 1.258267402648925871, -1.7770188490497034, -2.3236921469317835, 1.5991555452346802},
             // Move 2: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
             {1.1907035112380981, -1.0042412916766565, 1.2717208862304688, -1.7551067511187952, -2.3237159887896937, 1.590611219406128},
             // Move 3: [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
